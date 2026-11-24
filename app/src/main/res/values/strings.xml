@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">BMW F07 Launcher</string>
+    <string name="accessibility_label">BMW F07 런처 분할 실행</string>
+    <string name="accessibility_description">분할 화면에서 앱 두 개를 지정한 위치와 크기로 실행하기 위해 사용합니다. 화면 내용을 읽거나 저장하지 않습니다.</string>
+
+    <string name="settings_title">런처 설정</string>
+    <string name="drawer_title">전체 앱</string>
+    <string name="intro_skip_hint">화면을 터치하면 건너뜁니다</string>
+
+    <string name="section_engine">분할 실행 방식</string>
+    <string name="engine_virtual">가상 디스플레이 (런처 화면 안에 2개 창)</string>
+    <string name="engine_system">시스템 분할/자유 창 (앱을 직접 띄움)</string>
+    <string name="engine_virtual_desc">런처 프레임 안에 앱을 직접 렌더링합니다. 펌웨어가 가상 디스플레이 실행을 허용해야 하며, 일부 기기에서는 터치가 전달되지 않을 수 있습니다.</string>
+    <string name="engine_system_desc">안드로이드 다중 창(자유 형식) 기능으로 앱을 지정한 위치에 띄웁니다. 기기에서 자유 형식 창이 켜져 있어야 2:8 비율까지 적용됩니다.</string>
+
+    <string name="section_ratio">기본 분할 비율</string>
+    <string name="section_dpi">창별 DPI (가상 디스플레이 모드)</string>
+    <string name="section_presets">프리셋 6종</string>
+    <string name="section_intro">시작 인트로</string>
+    <string name="section_dock">독(하단바)</string>
+    <string name="section_permissions">권한 및 기본 런처</string>
+
+    <string name="intro_enabled">시작할 때 인트로 재생</string>
+    <string name="intro_skip_return">홈으로 돌아올 때는 건너뛰기</string>
+    <string name="intro_pick_video">동영상 선택 (.mp4)</string>
+    <string name="intro_reset_video">기본 M 인트로로 되돌리기</string>
+    <string name="intro_video_none">기본 M 인트로 (내장 애니메이션)</string>
+    <string name="intro_video_selected">선택한 동영상: %1$s</string>
+
+    <string name="dock_bottom">하단</string>
+    <string name="dock_left">좌측</string>
+    <string name="dock_auto_hide">독 자동 숨김</string>
+
+    <string name="perm_overlay">오버레이 권한 허용</string>
+    <string name="perm_accessibility">접근성 서비스 켜기</string>
+    <string name="perm_home">기본 런처로 설정</string>
+    <string name="perm_hidden_apps">숨긴 앱 관리</string>
+
+    <string name="engine_saved">분할 방식을 저장했습니다. 런처로 돌아가면 적용됩니다.</string>
+    <string name="app_missing">설치된 앱을 찾을 수 없습니다. 독을 길게 눌러 앱을 지정하세요.</string>
+</resources>
