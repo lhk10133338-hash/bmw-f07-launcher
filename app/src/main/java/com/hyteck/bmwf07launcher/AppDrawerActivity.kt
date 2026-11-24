@@ -38,11 +38,14 @@ class AppDrawerActivity : AppCompatActivity() {
         repo = AppRepository(this)
 
         binding.btnBack.setOnClickListener { finish() }
-        val manager = GridLayoutManager(this, SPAN_COUNT)
+        val spanCount = ((resources.displayMetrics.widthPixels / resources.displayMetrics.density) / 110)
+            .toInt()
+            .coerceIn(6, 16)
+        val manager = GridLayoutManager(this, spanCount)
         manager.spanSizeLookup = object : GridLayoutManager.SpanSizeLookup() {
             override fun getSpanSize(position: Int): Int {
                 val adapter = binding.appGrid.adapter ?: return 1
-                return if (adapter.getItemViewType(position) == TYPE_SECTION) SPAN_COUNT else 1
+                return if (adapter.getItemViewType(position) == TYPE_SECTION) spanCount else 1
             }
         }
         binding.appGrid.layoutManager = manager
@@ -184,7 +187,6 @@ class AppDrawerActivity : AppCompatActivity() {
     }
 
     companion object {
-        private const val SPAN_COUNT = 8
         private const val TYPE_SECTION = 0
         private const val TYPE_APP = 1
         private const val FAVORITE_TINT = 0xFF43B0E5.toInt()
