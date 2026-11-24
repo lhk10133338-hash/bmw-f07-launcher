@@ -51,12 +51,20 @@ class Settings(context: Context) {
         set(value) = write { it.putInt(KEY_RATIO, value.coerceIn(20, 80)) }
 
     var leftDpi: Int
-        get() = prefs.getInt(KEY_LEFT_DPI, 240).coerceIn(120, 480)
-        set(value) = write { it.putInt(KEY_LEFT_DPI, value.coerceIn(120, 480)) }
+        get() = prefs.getInt(KEY_LEFT_DPI, DEFAULT_DPI).coerceIn(MIN_DPI, MAX_DPI)
+        set(value) = write { it.putInt(KEY_LEFT_DPI, value.coerceIn(MIN_DPI, MAX_DPI)) }
 
     var rightDpi: Int
-        get() = prefs.getInt(KEY_RIGHT_DPI, 240).coerceIn(120, 480)
-        set(value) = write { it.putInt(KEY_RIGHT_DPI, value.coerceIn(120, 480)) }
+        get() = prefs.getInt(KEY_RIGHT_DPI, DEFAULT_DPI).coerceIn(MIN_DPI, MAX_DPI)
+        set(value) = write { it.putInt(KEY_RIGHT_DPI, value.coerceIn(MIN_DPI, MAX_DPI)) }
+
+    /**
+     * Size of the launcher's own UI (settings, app picker, app drawer) in percent.
+     * 100 uses the device density; lower values fit more on a 2560×720 screen.
+     */
+    var uiScale: Int
+        get() = prefs.getInt(KEY_UI_SCALE, 100).coerceIn(MIN_UI_SCALE, MAX_UI_SCALE)
+        set(value) = write { it.putInt(KEY_UI_SCALE, value.coerceIn(MIN_UI_SCALE, MAX_UI_SCALE)) }
 
     /** Left/right apps of the running session, restored after a reboot when [rememberSession]. */
     var sessionLeft: String?
@@ -213,14 +221,23 @@ class Settings(context: Context) {
         const val ENGINE_VIRTUAL = "virtual"
 
         const val MAX_PRESETS = 12
-        const val MIN_DPI = 100
-        const val MAX_DPI = 480
+        const val MIN_DPI = 120
+        const val MAX_DPI = 360
+
+        /** Default per-pane app scale: 200 dpi keeps a 2560×720 split readable, not huge. */
+        const val DEFAULT_DPI = 200
+
+        /** Launcher UI scale bounds in percent (see [uiScale]). */
+        const val MIN_UI_SCALE = 65
+        const val MAX_UI_SCALE = 130
+        const val UI_SCALE_STEP = 5
 
         private const val PREFS_NAME = "bmw_launcher_settings"
         private const val KEY_ENGINE = "engine"
         private const val KEY_RATIO = "ratio"
         private const val KEY_LEFT_DPI = "left_dpi"
         private const val KEY_RIGHT_DPI = "right_dpi"
+        private const val KEY_UI_SCALE = "ui_scale"
         private const val KEY_DOCK_LEFT = "dock_left"
         private const val KEY_DOCK_AUTO_HIDE = "dock_auto_hide"
         private const val KEY_DOCK_HIDDEN = "dock_hidden"

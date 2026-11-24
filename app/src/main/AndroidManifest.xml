@@ -25,7 +25,8 @@
             android:launchMode="singleTask"
             android:resizeableActivity="true"
             android:screenOrientation="landscape"
-            android:theme="@style/Theme.BmwLauncher">
+            android:theme="@style/Theme.BmwLauncher"
+            android:windowSoftInputMode="adjustNothing">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

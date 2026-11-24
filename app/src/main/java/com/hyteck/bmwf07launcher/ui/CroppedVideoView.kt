@@ -8,13 +8,15 @@ import android.net.Uri
 import android.util.AttributeSet
 import android.view.Surface
 import android.view.TextureView
-import kotlin.math.max
+import kotlin.math.min
 
 /**
- * Full-bleed video surface for the start-up intro.
+ * Video surface for the start-up intro.
  *
- * A VideoView letterboxes the clip; this TextureView scales the picture with a centre-crop
- * matrix so a 16:9 clip fills the whole 2560×720 head-unit screen with no black bars.
+ * The clip keeps its original aspect ratio and is fitted to the screen height, centred: a 16:9
+ * clip on the 2560×720 head unit is scaled by min(viewW/videoW, viewH/videoH), so nothing is cut
+ * off and the leftover side area stays pure black. (It used to be centre-cropped, which the user
+ * reported as "너무 배율이 들어갔어" — the picture was zoomed up and cut top and bottom.)
  */
 class CroppedVideoView @JvmOverloads constructor(
     context: Context,
@@ -161,13 +163,17 @@ class CroppedVideoView @JvmOverloads constructor(
         updateMatrix()
     }
 
-    /** Centre-crop: fill the view and cut the overflow instead of adding black bars. */
+    /**
+     * Fit-centre: keep the clip's own aspect ratio and fit it inside the view, centred. The
+     * smaller of the two ratios wins, so a clip that is wider than the screen is scaled down to
+     * the width instead of being cropped.
+     */
     private fun updateMatrix() {
         if (videoWidth <= 0 || videoHeight <= 0) return
         val viewWidth = width.toFloat()
         val viewHeight = height.toFloat()
         if (viewWidth <= 0f || viewHeight <= 0f) return
-        val scale = max(viewWidth / videoWidth, viewHeight / videoHeight)
+        val scale = min(viewWidth / videoWidth, viewHeight / videoHeight)
         val matrix = Matrix()
         matrix.setScale(scale, scale, viewWidth / 2f, viewHeight / 2f)
         setTransform(matrix)

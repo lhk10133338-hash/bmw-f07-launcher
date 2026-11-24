@@ -55,12 +55,18 @@ class VirtualDisplayEngine(
     private val densities = HashMap<Side, Int>()
     private val reflowPending = HashMap<Side, Boolean>()
 
-    private var syncing = false
+    /** Per side, so resizing the left display never swallows the right one's callback. */
+    private val syncing = HashSet<Side>()
     private var unavailableReported = false
     private var launchErrorReported = false
     private var released = false
 
     private val syncRunnable = Runnable {
+        syncSide(Side.LEFT)
+        syncSide(Side.RIGHT)
+    }
+
+    private val followUpSync = Runnable {
         syncSide(Side.LEFT)
         syncSide(Side.RIGHT)
     }
@@ -149,7 +155,34 @@ class VirtualDisplayEngine(
 
     override fun applyBounds(left: Rect, right: Rect, commit: Boolean) {
         // The SurfaceViews already have the exact pane size; re-read it and resize the displays.
+        // Both panes are handled in the same pass, and one more pass follows shortly after so a
+        // resize that landed between two layout frames is not left behind.
         scheduleSync()
+        if (commit) {
+            handler.removeCallbacks(followUpSync)
+            handler.postDelayed(followUpSync, FOLLOW_UP_MS)
+        }
+    }
+
+    /**
+     * The launcher came back in front (or a surface came back): re-attach the surfaces, resize
+     * both displays and bring the running apps back to the front of their own displays.
+     */
+    override fun resume(sides: Set<Side>) {
+        if (released) return
+        for (side in sides) {
+            if (packages[side] == null) continue
+            val surface = viewOf(side).holder.surface
+            val display = displays[side]
+            if (display != null && surface != null && surface.isValid && display.surface !== surface) {
+                runCatching { display.surface = surface }
+                sizes.remove(side)
+            }
+            scheduleReflow(side)
+        }
+        scheduleSync()
+        handler.removeCallbacks(followUpSync)
+        handler.postDelayed(followUpSync, FOLLOW_UP_MS)
     }
 
     private fun syncSide(side: Side) {
@@ -163,10 +196,20 @@ class VirtualDisplayEngine(
     }
 
     private fun sync(side: Side, width: Int, height: Int) {
-        if (released || syncing) return
+        if (released) return
+        if (!syncing.add(side)) {
+            // A callback for this side arrived while its own resize was running: do it again so
+            // the newest size wins (this used to be a single flag shared by both panes, which
+            // silently dropped the other pane's resize).
+            scheduleSync()
+            return
+        }
         val holder = viewOf(side).holder
-        val surface = holder.surface ?: return
-        if (!surface.isValid) return
+        val surface = holder.surface
+        if (surface == null || !surface.isValid) {
+            syncing.remove(side)
+            return
+        }
 
         val density = densityOf(side)
         val existing = displays[side]
@@ -175,10 +218,10 @@ class VirtualDisplayEngine(
             record[0] == width && record[1] == height && record[2] == density &&
             existing.surface === surface
         ) {
+            syncing.remove(side)
             return
         }
 
-        syncing = true
         try {
             // 1) surface buffer = pane rectangle, 2) display = same rectangle.
             runCatching { holder.setFixedSize(width, height) }
@@ -213,7 +256,7 @@ class VirtualDisplayEngine(
             sizes[side] = intArrayOf(width, height, density)
             packages[side]?.let { launchOnDisplay(it, display.display.displayId, reorder = false) }
         } finally {
-            syncing = false
+            syncing.remove(side)
         }
     }
 
@@ -318,6 +361,7 @@ class VirtualDisplayEngine(
     override fun release() {
         released = true
         handler.removeCallbacks(syncRunnable)
+        handler.removeCallbacks(followUpSync)
         handler.removeCallbacks(reflowRunnable)
         handler.removeCallbacks(watchdog)
         for (display in displays.values) {
@@ -333,6 +377,7 @@ class VirtualDisplayEngine(
         private const val WATCHDOG_MS = 4000L
         private const val SYNC_DELAY_MS = 64L
         private const val REFLOW_DELAY_MS = 260L
+        private const val FOLLOW_UP_MS = 220L
 
         // DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC / _SUPPORTS_TOUCH (hidden constants).
         private const val FLAG_PUBLIC = 1

@@ -6,12 +6,12 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.ViewGroup
 import androidx.appcompat.app.AlertDialog
-import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.hyteck.bmwf07launcher.data.AppInfo
 import com.hyteck.bmwf07launcher.data.AppRepository
 import com.hyteck.bmwf07launcher.data.Settings
+import com.hyteck.bmwf07launcher.util.ScaledActivity
 import com.hyteck.bmwf07launcher.databinding.ActivityAppDrawerBinding
 import com.hyteck.bmwf07launcher.databinding.ItemAppBinding
 import com.hyteck.bmwf07launcher.databinding.ItemSectionBinding
@@ -22,7 +22,7 @@ import com.hyteck.bmwf07launcher.util.toast
  * Full app drawer: favourites pinned at the top, then every other installed app.
  * Long-press an app for the pane choices and for hiding/pinning it.
  */
-class AppDrawerActivity : AppCompatActivity() {
+class AppDrawerActivity : ScaledActivity() {
 
     private lateinit var binding: ActivityAppDrawerBinding
     private lateinit var settings: Settings
@@ -50,6 +50,17 @@ class AppDrawerActivity : AppCompatActivity() {
         }
         binding.appGrid.layoutManager = manager
         refresh()
+    }
+
+    /** Leaving the drawer must not animate over the launcher's panes. */
+    override fun finish() {
+        super.finish()
+        noTransition()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun noTransition() {
+        overridePendingTransition(0, 0)
     }
 
     private fun refresh() {

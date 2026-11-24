@@ -31,7 +31,7 @@ object RatioMenu {
         }
 
         content.addView(
-            PaneSheet.text(activity, activity.getString(R.string.ratio_title), 11f, Color.parseColor("#FF8A8A8A"))
+            paneText(activity, activity.getString(R.string.ratio_title), 11f, Color.parseColor("#FF8A8A8A"))
         )
 
         val firstRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
@@ -70,7 +70,7 @@ object RatioMenu {
         ratioButtonText(activity, "${ratio} : ${100 - ratio}", selected, onClick)
 
     private fun ratioButtonText(activity: Activity, label: String, selected: Boolean, onClick: () -> Unit): TextView =
-        PaneSheet.text(activity, label, 13f, Color.parseColor("#FFEDEDED")).apply {
+        paneText(activity, label, 13f, Color.parseColor("#FFEDEDED")).apply {
             gravity = Gravity.CENTER
             setBackgroundResource(if (selected) R.drawable.bg_ratio_btn_on else R.drawable.bg_ratio_btn)
             isClickable = true

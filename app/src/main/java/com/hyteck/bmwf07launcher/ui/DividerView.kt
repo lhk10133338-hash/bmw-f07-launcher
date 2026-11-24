@@ -133,7 +133,12 @@ class DividerView @JvmOverloads constructor(
         container.getLocationOnScreen(location)
         val width = container.width
         if (width <= 0) return
-        val ratio = (((rawX - location[0]) / width) * 100f).roundToInt()
+        // The ratio is applied to the two panes together, so the divider strip itself is taken
+        // out of the maths; otherwise the line always trails the finger by a few dp.
+        val divider = (container as? SplitLayout)?.dividerSize ?: 0
+        val available = (width - divider).coerceAtLeast(2)
+        val x = rawX - location[0] - divider / 2f
+        val ratio = ((x / available) * 100f).roundToInt()
             .coerceIn(SplitLayout.MIN_RATIO, SplitLayout.MAX_RATIO)
         onRatioChange?.invoke(ratio, commit)
     }

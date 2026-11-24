@@ -1,6 +1,7 @@
 package com.hyteck.bmwf07launcher
 
 import android.content.Intent
+import android.graphics.Rect
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -12,20 +13,20 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AlertDialog
-import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
 import com.hyteck.bmwf07launcher.data.AppInfo
 import com.hyteck.bmwf07launcher.data.AppRepository
 import com.hyteck.bmwf07launcher.data.Preset
 import com.hyteck.bmwf07launcher.data.Settings
+import com.hyteck.bmwf07launcher.util.ScaledActivity
 import com.hyteck.bmwf07launcher.databinding.ActivityLauncherBinding
 import com.hyteck.bmwf07launcher.databinding.DockPresetBinding
 import com.hyteck.bmwf07launcher.engine.Side
 import com.hyteck.bmwf07launcher.engine.SplitEngine
 import com.hyteck.bmwf07launcher.engine.SystemSplitEngine
 import com.hyteck.bmwf07launcher.engine.VirtualDisplayEngine
-import com.hyteck.bmwf07launcher.ui.AppPickerDialog
-import com.hyteck.bmwf07launcher.ui.PaneSheet
+import com.hyteck.bmwf07launcher.ui.PanePanel
 import com.hyteck.bmwf07launcher.ui.RatioMenu
 import com.hyteck.bmwf07launcher.util.applyImmersive
 import com.hyteck.bmwf07launcher.util.dp
@@ -39,7 +40,7 @@ import java.util.Locale
  * two full-bleed rectangular panes, a slim left dock (clock, preset tiles, save, drawer,
  * settings) and one-pixel divider. No top bar, no bottom bar.
  */
-class LauncherActivity : AppCompatActivity() {
+class LauncherActivity : ScaledActivity() {
 
     private lateinit var binding: ActivityLauncherBinding
     private lateinit var settings: Settings
@@ -59,6 +60,40 @@ class LauncherActivity : AppCompatActivity() {
     private var appliedLeftDpi: Int = 0
     private var appliedRightDpi: Int = 0
     private var appliedDockAtLeft: Boolean? = null
+
+    /** Last rectangles handed to the engine, so identical layout passes are not repeated. */
+    private var lastBoundsKey: String? = null
+
+    /** Each pane owns an inline menu overlay; neither one is a separate window any more. */
+    private lateinit var leftPanel: PanePanel
+    private lateinit var rightPanel: PanePanel
+
+    /** Frames the launcher has been resumed; the first one belongs to the screen coming up. */
+    private var resumeCount = 0
+    private var appliedUiScale = 0
+
+    /**
+     * True while the settings screen or the app drawer is being opened: the restore of the two
+     * free-form windows must not compete with that screen's transition.
+     */
+    private var suppressAutoRestore = false
+
+    private val restoreRunnable = Runnable {
+        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return@Runnable
+        if (suppressAutoRestore) return@Runnable
+        if (!sessionStarted) return@Runnable
+        if (leftPanel.isOpen || rightPanel.isOpen) return@Runnable
+        val current = engine ?: return@Runnable
+        val sides = HashSet<Side>()
+        val single = fullscreen
+        if (single != null) {
+            if (pkgOf(single) != null) sides.add(single)
+        } else {
+            if (leftPkg != null) sides.add(Side.LEFT)
+            if (rightPkg != null) sides.add(Side.RIGHT)
+        }
+        if (sides.isNotEmpty()) current.resume(sides)
+    }
 
     private val handler = Handler(Looper.getMainLooper())
     private val clockFormat = SimpleDateFormat("HH:mm", Locale.KOREA)
@@ -88,6 +123,9 @@ class LauncherActivity : AppCompatActivity() {
         settings = Settings(this)
         repo = AppRepository(this)
         apps = repo.apps
+        leftPanel = PanePanel(this, binding.leftOverlay)
+        rightPanel = PanePanel(this, binding.rightOverlay)
+        appliedUiScale = settings.uiScale
 
         ratio = settings.ratio
         binding.split.ratio = ratio
@@ -106,6 +144,10 @@ class LauncherActivity : AppCompatActivity() {
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                if (leftPanel.isOpen || rightPanel.isOpen) {
+                    closePanePanels()
+                    return
+                }
                 if (fullscreen != null || (engine?.inline == false && (leftPkg != null || rightPkg != null))) {
                     if (fullscreen != null) setFullscreen(null)
                 }
@@ -127,15 +169,38 @@ class LauncherActivity : AppCompatActivity() {
     // ------------------------------------------------------------------ dock
 
     private fun setupDock() {
-        binding.dockDrawer.setOnClickListener {
-            startActivity(Intent(this, AppDrawerActivity::class.java))
-        }
-        binding.dockSettings.setOnClickListener {
-            startActivity(Intent(this, SettingsActivity::class.java))
-        }
+        binding.dockDrawer.setOnClickListener { openDrawer() }
+        binding.dockSettings.setOnClickListener { openSettings() }
         binding.dockSave.setOnClickListener { saveCurrentPreset() }
         binding.dockHide.setOnClickListener { setDockHidden(true, persist = true) }
         binding.dockEdge.setOnClickListener { setDockHidden(false, persist = true) }
+    }
+
+    /**
+     * Opens a full launcher screen (settings / app drawer).
+     *
+     * While two free-form windows are running, a restore that fires during the transition would
+     * pull those windows back over the new screen and swallow the first tap, so any pending
+     * restore is cancelled and autorestored is suppressed until this screen comes back.
+     */
+    private fun openSettings() {
+        suppressAutoRestore = true
+        handler.removeCallbacks(restoreRunnable)
+        startActivity(Intent(this, SettingsActivity::class.java))
+        noTransition()
+    }
+
+    private fun openDrawer() {
+        suppressAutoRestore = true
+        handler.removeCallbacks(restoreRunnable)
+        startActivity(Intent(this, AppDrawerActivity::class.java))
+        noTransition()
+    }
+
+    /** The launcher never animates between its own screens: the panes must not jump. */
+    @Suppress("DEPRECATION")
+    private fun noTransition() {
+        overridePendingTransition(0, 0)
     }
 
     private fun applyDockSide(force: Boolean = false) {
@@ -232,9 +297,10 @@ class LauncherActivity : AppCompatActivity() {
             }
             val params = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(44)
+                dp(48)
             )
             params.bottomMargin = dp(3)
+            row.root.isFocusable = false
             binding.presetList.addView(row.root, params)
             presetRows.add(row)
         }
@@ -304,12 +370,12 @@ class LauncherActivity : AppCompatActivity() {
                 when (which) {
                     0 -> applyPreset(index)
                     1 -> renamePreset(index)
-                    2 -> AppPickerDialog.show(this, getString(R.string.preset_menu_left), apps) { pkg ->
+                    2 -> openPanePicker(Side.LEFT) { pkg ->
                         settings.updatePreset(index) { it.copy(left = pkg) }
                         updatePresetList()
                     }
 
-                    3 -> AppPickerDialog.show(this, getString(R.string.preset_menu_right), apps) { pkg ->
+                    3 -> openPanePicker(Side.RIGHT) { pkg ->
                         settings.updatePreset(index) { it.copy(right = pkg) }
                         updatePresetList()
                     }
@@ -364,20 +430,30 @@ class LauncherActivity : AppCompatActivity() {
     private fun setupPanes() {
         binding.leftEmpty.setOnClickListener { pickApp(Side.LEFT) }
         binding.rightEmpty.setOnClickListener { pickApp(Side.RIGHT) }
+        // A long press anywhere on the pane (its empty area or its handle) opens that pane's own
+        // inline menu: change app · remove app · scale · fullscreen.
+        binding.leftEmpty.setOnLongClickListener {
+            openPaneMenu(Side.LEFT)
+            true
+        }
+        binding.rightEmpty.setOnLongClickListener {
+            openPaneMenu(Side.RIGHT)
+            true
+        }
 
-        binding.leftHandle.setOnClickListener { showPaneSheet(Side.LEFT) }
+        binding.leftHandle.setOnClickListener { openPaneMenu(Side.LEFT) }
         binding.leftHandle.setOnLongClickListener {
-            setFullscreen(if (fullscreen == Side.LEFT) null else Side.LEFT)
+            openPaneMenu(Side.LEFT)
             true
         }
-        binding.leftHandle.onSwipeUp = { showPaneSheet(Side.LEFT) }
+        binding.leftHandle.onSwipeUp = { openPaneMenu(Side.LEFT) }
 
-        binding.rightHandle.setOnClickListener { showPaneSheet(Side.RIGHT) }
+        binding.rightHandle.setOnClickListener { openPaneMenu(Side.RIGHT) }
         binding.rightHandle.setOnLongClickListener {
-            setFullscreen(if (fullscreen == Side.RIGHT) null else Side.RIGHT)
+            openPaneMenu(Side.RIGHT)
             true
         }
-        binding.rightHandle.onSwipeUp = { showPaneSheet(Side.RIGHT) }
+        binding.rightHandle.onSwipeUp = { openPaneMenu(Side.RIGHT) }
 
         binding.leftFullExit.setOnClickListener { setFullscreen(null) }
         binding.rightFullExit.setOnClickListener { setFullscreen(null) }
@@ -414,6 +490,7 @@ class LauncherActivity : AppCompatActivity() {
     }
 
     private fun setFullscreen(side: Side?) {
+        closePanePanels()
         fullscreen = side
         binding.split.fullscreen = side
         binding.leftFullExit.visibility = if (side == Side.LEFT) View.VISIBLE else View.GONE
@@ -443,23 +520,99 @@ class LauncherActivity : AppCompatActivity() {
         val left = binding.split.screenRectOf(Side.LEFT)
         val right = binding.split.screenRectOf(Side.RIGHT)
         if (left.width() <= 0 || right.width() <= 0) return
+        // A floating app window must never start on top of the dock: the dock's own buttons
+        // would lose their first tap to the window above them.
+        val dock = dockRectOnScreen()
+        if (dock != null) {
+            val margin = dp(2)
+            if (settings.dockAtLeft) {
+                if (left.left < dock.right + margin) left.left = dock.right + margin
+            } else if (right.right > dock.left - margin) {
+                right.right = dock.left - margin
+            }
+        }
+        // Layout callbacks, the divider and onResume all report the same rectangles; hand them
+        // to the engine once so the windows are not re-placed (and the screen does not jump).
+        val key = "$commit|${left.toShortString()}|${right.toShortString()}"
+        if (key == lastBoundsKey) return
+        lastBoundsKey = key
         current.applyBounds(left, right, commit || current.inline)
     }
 
-    private fun showPaneSheet(side: Side) {
-        val pkg = pkgOf(side)
-        val title = getString(if (side == Side.LEFT) R.string.pane_left else R.string.pane_right) +
-            " · " + if (pkg == null) getString(R.string.pane_empty) else repo.labelOf(pkg)
-        PaneSheet.show(
-            this,
-            title,
-            if (pkg == null) getString(R.string.app_add_hint) else getString(R.string.pane_handle_hint),
-            dpi = if (engine?.supportsDpi == true) dpiOf(side) else null,
-            onPickApp = { pickApp(side) },
-            onFullscreen = { setFullscreen(if (fullscreen == side) null else side) },
-            onClear = { applySide(side, null) },
-            onScale = { PaneSheet.showScale(this, title, dpiOf(side)) { dpi -> applyDpi(side, dpi) } }
+    /** Area of the visible dock in screen pixels (null when the dock is hidden). */
+    private fun dockRectOnScreen(): Rect? {
+        if (binding.dock.visibility != View.VISIBLE || binding.dock.width <= 0) return null
+        val location = IntArray(2)
+        binding.dock.getLocationOnScreen(location)
+        return Rect(
+            location[0],
+            location[1],
+            location[0] + binding.dock.width,
+            location[1] + binding.dock.height
         )
+    }
+
+    // ------------------------------------------------------------- pane menus
+
+    private fun panelOf(side: Side): PanePanel = if (side == Side.LEFT) leftPanel else rightPanel
+
+    private fun closePanePanels() {
+        leftPanel.close()
+        rightPanel.close()
+    }
+
+    private fun paneTitle(side: Side): String =
+        getString(if (side == Side.LEFT) R.string.pane_left else R.string.pane_right)
+
+    /** The handle menu of one pane, drawn inside that pane only. */
+    private fun openPaneMenu(side: Side) {
+        closePanePanels()
+        val pkg = pkgOf(side)
+        val virtual = engine?.supportsDpi == true
+        val subtitle = if (pkg == null) getString(R.string.pane_empty) else repo.labelOf(pkg)
+        panelOf(side).showMenu(
+            title = paneTitle(side),
+            subtitle = subtitle,
+            dpi = if (virtual) dpiOf(side) else null,
+            isFullscreen = fullscreen == side,
+            onPickApp = { openPanePicker(side) },
+            onFullscreen = {
+                closePanePanels()
+                setFullscreen(if (fullscreen == side) null else side)
+            },
+            onClear = {
+                closePanePanels()
+                applySide(side, null)
+                toast(getString(R.string.pane_cleared))
+            },
+            onScale = {
+                panelOf(side).showScale(
+                    title = paneTitle(side),
+                    subtitle = subtitle,
+                    initialDpi = dpiOf(side),
+                    requiresVirtual = !virtual
+                ) { dpi -> applyDpi(side, dpi) }
+            }
+        )
+    }
+
+    /**
+     * Installed-app list of one pane, inside that pane only. [onPicked] overrides what happens
+     * with the choice (used when editing a preset's app from the dock).
+     */
+    private fun openPanePicker(side: Side, onPicked: ((String?) -> Unit)? = null) {
+        closePanePanels()
+        val pkg = pkgOf(side)
+        panelOf(side).showPicker(
+            title = paneTitle(side),
+            subtitle = if (pkg == null) getString(R.string.app_add_hint)
+            else getString(R.string.pane_pick_hint),
+            apps = apps,
+            current = pkg,
+            allowClear = onPicked != null || pkg != null
+        ) { picked ->
+            if (onPicked != null) onPicked(picked) else applySide(side, picked)
+        }
     }
 
     private fun pickApp(side: Side) {
@@ -469,9 +622,7 @@ class LauncherActivity : AppCompatActivity() {
             engine?.launch(side, pkg)
             return
         }
-        AppPickerDialog.show(this, getString(R.string.app_add), apps) { picked ->
-            if (picked == null) applySide(side, null) else applySide(side, picked)
-        }
+        openPanePicker(side)
     }
 
     private fun pkgOf(side: Side): String? = if (side == Side.LEFT) leftPkg else rightPkg
@@ -498,9 +649,29 @@ class LauncherActivity : AppCompatActivity() {
     private fun applyDpi(side: Side, dpi: Int) {
         val value = dpi.coerceIn(Settings.MIN_DPI, Settings.MAX_DPI)
         if (side == Side.LEFT) settings.leftDpi = value else settings.rightDpi = value
-        engine?.setDensity(side, value)
-        if (side == Side.LEFT) appliedLeftDpi = value else appliedRightDpi = value
+        val current = engine
+        if (current != null && current.supportsDpi) {
+            current.setDensity(side, value)
+            if (side == Side.LEFT) appliedLeftDpi = value else appliedRightDpi = value
+        } else if (settings.engine != Settings.ENGINE_VIRTUAL) {
+            // A free-form window keeps the screen's own density; the virtual display engine is
+            // the one that can give each pane its own scale.
+            switchToVirtualEngine()
+        }
         scheduleBounds(commit = true)
+    }
+
+    /** Moves the running session to the virtual display engine and puts both apps back. */
+    private fun switchToVirtualEngine() {
+        settings.engine = Settings.ENGINE_VIRTUAL
+        closePanePanels()
+        setupEngine()
+        updateEmptyStates()
+        val left = leftPkg
+        val right = rightPkg
+        if (left != null) engine?.launch(Side.LEFT, left)
+        if (right != null) handler.postDelayed({ engine?.launch(Side.RIGHT, right) }, 320L)
+        toast(getString(R.string.engine_switched_virtual))
     }
 
     private fun swapPanes() {
@@ -547,14 +718,17 @@ class LauncherActivity : AppCompatActivity() {
     ) {
         val inline = engine?.inline == true
         container.visibility = if (inline && pkg != null) View.GONE else View.VISIBLE
+        // No "touch to open again" line any more: an empty pane shows one + 버튼, and a pane
+        // that already has an app just names it (a long press opens its menu).
+        hint.visibility = View.GONE
         if (pkg == null) {
             icon.visibility = View.VISIBLE
             title.text = getString(R.string.app_add)
-            hint.text = getString(R.string.app_add_hint)
+            hint.text = ""
         } else {
             icon.visibility = View.GONE
             title.text = repo.labelOf(pkg)
-            hint.text = getString(R.string.pane_reopen_hint)
+            hint.text = ""
         }
     }
 
@@ -562,6 +736,7 @@ class LauncherActivity : AppCompatActivity() {
 
     private fun setupEngine() {
         engine?.release()
+        lastBoundsKey = null
         engineMode = settings.engine
         appliedLeftDpi = settings.leftDpi
         appliedRightDpi = settings.rightDpi
@@ -616,18 +791,23 @@ class LauncherActivity : AppCompatActivity() {
             if (leftPkg == null) leftPkg = repo.installedOrNull(settings.sessionLeft)
             if (rightPkg == null) rightPkg = repo.installedOrNull(settings.sessionRight)
         }
-        leftPkg?.let { engine?.launch(Side.LEFT, it) }
-        val right = rightPkg
-        if (right != null) {
-            if (engine?.inline == true) {
-                engine?.launch(Side.RIGHT, right)
-            } else {
-                handler.postDelayed({ engine?.launch(Side.RIGHT, right) }, 320L)
+        // The panes only have their final size after the first layout pass; launching earlier put
+        // the windows on screen once at their old size and made the start-up look unstable.
+        handler.postDelayed({
+            if (isFinishing || isDestroyed) return@postDelayed
+            applyBounds(commit = false)
+            leftPkg?.let { engine?.launch(Side.LEFT, it) }
+            val right = rightPkg
+            if (right != null) {
+                if (engine?.inline == true) {
+                    engine?.launch(Side.RIGHT, right)
+                } else {
+                    handler.postDelayed({ engine?.launch(Side.RIGHT, right) }, 320L)
+                }
             }
-        }
+        }, SESSION_START_DELAY_MS)
         updateEmptyStates()
     }
-
     private fun handleIntent(intent: Intent?): Boolean {
         val pkg = intent?.getStringExtra(EXTRA_PACKAGE) ?: return false
         val side = if (intent.getStringExtra(EXTRA_SIDE) == "right") Side.RIGHT else Side.LEFT
@@ -661,6 +841,14 @@ class LauncherActivity : AppCompatActivity() {
         super.onResume()
         applyImmersive()
 
+        if (appliedUiScale != 0 && appliedUiScale != settings.uiScale) {
+            // The launcher UI size changed in the settings screen: rebuild this screen with the
+            // new density so every pane keeps its exact rectangle.
+            appliedUiScale = settings.uiScale
+            recreate()
+            return
+        }
+
         if (engineMode.isNotEmpty() && engineMode != settings.engine) {
             val left = leftPkg
             val right = rightPkg
@@ -693,6 +881,21 @@ class LauncherActivity : AppCompatActivity() {
         updatePresetList()
         updateEmptyStates()
         scheduleBounds(commit = true)
+
+        // Coming back from the settings screen, the app drawer or any other screen: put the two
+        // apps back into their panes (the opaque launcher window was covering them).
+        if (resumeCount > 0) {
+            suppressAutoRestore = false
+            handler.removeCallbacks(restoreRunnable)
+            handler.postDelayed(restoreRunnable, RESTORE_DELAY_MS)
+        }
+        resumeCount++
+    }
+
+    override fun onPause() {
+        super.onPause()
+        closePanePanels()
+        handler.removeCallbacks(restoreRunnable)
     }
 
     override fun onDestroy() {
@@ -772,5 +975,7 @@ class LauncherActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_PACKAGE = "extra_package"
         const val EXTRA_SIDE = "extra_side"
+        private const val RESTORE_DELAY_MS = 280L
+        private const val SESSION_START_DELAY_MS = 140L
     }
 }

@@ -30,5 +30,13 @@ interface SplitEngine {
 
     fun applyBounds(left: Rect, right: Rect, commit: Boolean)
 
+    /**
+     * Puts the apps named by [sides] back in front after the launcher was covered by another
+     * screen (settings, app drawer, another app). Engines that render inside the launcher
+     * re-attach their surface and re-launch the app on its display; the system engine re-places
+     * the floating windows into their rectangles.
+     */
+    fun resume(sides: Set<Side>)
+
     fun release()
 }

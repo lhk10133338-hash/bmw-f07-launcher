@@ -10,10 +10,10 @@ import android.widget.SeekBar
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
-import androidx.appcompat.app.AppCompatActivity
 import com.hyteck.bmwf07launcher.data.AppRepository
 import com.hyteck.bmwf07launcher.data.Preset
 import com.hyteck.bmwf07launcher.data.Settings
+import com.hyteck.bmwf07launcher.util.ScaledActivity
 import com.hyteck.bmwf07launcher.databinding.ActivitySettingsBinding
 import com.hyteck.bmwf07launcher.databinding.ItemPresetEditBinding
 import com.hyteck.bmwf07launcher.service.LauncherAccessibilityService
@@ -22,13 +22,16 @@ import com.hyteck.bmwf07launcher.util.applyImmersive
 import com.hyteck.bmwf07launcher.util.dp
 import com.hyteck.bmwf07launcher.util.toast
 
-class SettingsActivity : AppCompatActivity() {
+class SettingsActivity : ScaledActivity() {
 
     private lateinit var binding: ActivitySettingsBinding
     private lateinit var settings: Settings
     private lateinit var repo: AppRepository
 
     private val presetRows = ArrayList<ItemPresetEditBinding>()
+
+    /** UI scale this screen was built with, so the screen knows when it has to be rebuilt. */
+    private var appliedScale = 0
 
     private val pickVideo = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -54,6 +57,7 @@ class SettingsActivity : AppCompatActivity() {
 
         settings = Settings(this)
         repo = AppRepository(this)
+        appliedScale = settings.uiScale
 
         binding.btnBack.setOnClickListener { finish() }
 
@@ -61,11 +65,23 @@ class SettingsActivity : AppCompatActivity() {
         setupEngine()
         setupRatio()
         setupDpi()
+        setupLauncherScale()
         setupPresets()
         setupDock()
         setupPermissions()
 
         updateVideoName()
+    }
+
+    /** Leaving the drawer must not animate over the launcher's panes. */
+    override fun finish() {
+        super.finish()
+        noTransition()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun noTransition() {
+        overridePendingTransition(0, 0)
     }
 
     // -------------------------------------------------------- start & restore
@@ -224,13 +240,13 @@ class SettingsActivity : AppCompatActivity() {
         binding.rightDpiSeek.max = maxProgress
         binding.leftDpiSeek.progress = (settings.leftDpi - Settings.MIN_DPI) / 10
         binding.rightDpiSeek.progress = (settings.rightDpi - Settings.MIN_DPI) / 10
-        binding.leftDpiValue.text = getString(R.string.dpi_value, settings.leftDpi)
-        binding.rightDpiValue.text = getString(R.string.dpi_value, settings.rightDpi)
+        binding.leftDpiValue.text = dpiLabel(settings.leftDpi)
+        binding.rightDpiValue.text = dpiLabel(settings.rightDpi)
 
         binding.leftDpiSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 val dpi = Settings.MIN_DPI + progress * 10
-                binding.leftDpiValue.text = getString(R.string.dpi_value, dpi)
+                binding.leftDpiValue.text = dpiLabel(dpi)
                 if (fromUser) settings.leftDpi = dpi
             }
 
@@ -244,9 +260,13 @@ class SettingsActivity : AppCompatActivity() {
         })
 
         binding.rightDpiSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+            override fun onProgressChanged(
+                seekBar: SeekBar?,
+                progress: Int,
+                fromUser: Boolean
+            ) {
                 val dpi = Settings.MIN_DPI + progress * 10
-                binding.rightDpiValue.text = getString(R.string.dpi_value, dpi)
+                binding.rightDpiValue.text = dpiLabel(dpi)
                 if (fromUser) settings.rightDpi = dpi
             }
 
@@ -256,6 +276,38 @@ class SettingsActivity : AppCompatActivity() {
 
             override fun onStopTrackingTouch(seekBar: SeekBar?) {
                 // no-op
+            }
+        })
+    }
+
+    private fun dpiLabel(dpi: Int): String =
+        getString(R.string.dpi_value_percent, dpi, (dpi * 100) / 160)
+
+    // --------------------------------------------------------- launcher scale
+
+    private fun setupLauncherScale() {
+        val step = Settings.UI_SCALE_STEP
+        binding.launcherScaleSeek.max = (Settings.MAX_UI_SCALE - Settings.MIN_UI_SCALE) / step
+        binding.launcherScaleSeek.progress = (settings.uiScale - Settings.MIN_UI_SCALE) / step
+        binding.launcherScaleValue.text = getString(R.string.launcher_scale_value, settings.uiScale)
+        binding.launcherScaleHint.text = getString(R.string.launcher_scale_hint)
+        binding.launcherScaleSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                val percent = Settings.MIN_UI_SCALE + progress * step
+                binding.launcherScaleValue.text = getString(R.string.launcher_scale_value, percent)
+                if (fromUser) settings.uiScale = percent
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {
+                // no-op
+            }
+
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                // Rebuild this screen so the new size is visible immediately.
+                if (settings.uiScale != appliedScale) {
+                    appliedScale = settings.uiScale
+                    recreate()
+                }
             }
         })
     }

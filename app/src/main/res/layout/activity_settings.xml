@@ -289,7 +289,46 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="2dp"
-                android:text="2:8처럼 좁은 창에서 앱 글자가 크면 배율을 낮추세요. 가상 디스플레이 방식에서만 적용됩니다."
+                android:text="기본 200 dpi. 2:8처럼 좁은 창에서 앱 글자가 크면 120~160까지 낮추세요. 가상 디스플레이 방식에서만 적용됩니다(시스템 자유창은 기기 기본 DPI)."
+                android:textColor="@color/text_secondary"
+                android:textSize="10sp" />
+
+            <TextView
+                style="@style/SettingsSection"
+                android:text="@string/section_launcher_scale" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <SeekBar
+                    android:id="@+id/launcherScaleSeek"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:max="13"
+                    android:progress="7"
+                    android:progressTint="@color/m_blue"
+                    android:thumbTint="@color/m_blue" />
+
+                <TextView
+                    android:id="@+id/launcherScaleValue"
+                    android:layout_width="72dp"
+                    android:layout_height="wrap_content"
+                    android:gravity="end"
+                    android:text="100%"
+                    android:textColor="@color/text_primary"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/launcherScaleHint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="@string/launcher_scale_hint"
                 android:textColor="@color/text_secondary"
                 android:textSize="10sp" />
 
@@ -379,7 +418,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="18dp"
-                android:text="BMW F07 Launcher v2.0 · 2560×720 / Android 14"
+                android:text="BMW F07 Launcher v2.1 · 2560×720 / Android 14"
                 android:textColor="#FF4A4A4A"
                 android:textSize="10sp" />
         </LinearLayout>
