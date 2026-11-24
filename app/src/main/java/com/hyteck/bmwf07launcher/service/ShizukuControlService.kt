@@ -3,11 +3,15 @@ package com.hyteck.bmwf07launcher.service
 import android.content.Context
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
+import android.os.Handler
+import android.os.Looper
 import android.view.InputEvent
 import android.view.MotionEvent
 import android.view.Surface
 import com.hyteck.bmwf07launcher.IShizukuControl
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * The shell side of the launcher's virtual-display engine (v3.4).
@@ -30,6 +34,59 @@ import java.util.concurrent.ConcurrentHashMap
 class ShizukuControlService : IShizukuControl.Stub() {
 
     private val displays = ConcurrentHashMap<Int, VirtualDisplay>()
+
+    /**
+     * A thread with a Looper, used for everything that talks to the display manager.
+     *
+     * Binder calls arrive on plain binder threads, which have no Looper, and
+     * `createVirtualDisplay` builds its callback handler from the calling thread. A dedicated
+     * looper thread also keeps the display alive after the calling thread ends.
+     */
+    private val displayHandler: Handler? by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        try {
+            val ready = CountDownLatch(1)
+            var created: Handler? = null
+            val thread = Thread({
+                Looper.prepare()
+                created = Handler(Looper.myLooper()!!)
+                ready.countDown()
+                Looper.loop()
+            }, "bmw-f07-display")
+            thread.isDaemon = true
+            thread.start()
+            if (!ready.await(DISPLAY_THREAD_TIMEOUT_S, TimeUnit.SECONDS)) {
+                null
+            } else {
+                created
+            }
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    /** Runs [block] on the display thread and waits for its result (bounded). */
+    private fun <T> onDisplayThread(fallback: T, block: () -> T): T {
+        val handler = displayHandler ?: return fallback
+        if (Looper.myLooper() === handler.looper) {
+            return try {
+                block()
+            } catch (t: Throwable) {
+                fallback
+            }
+        }
+        val done = CountDownLatch(1)
+        var result = fallback
+        handler.post {
+            result = try {
+                block()
+            } catch (t: Throwable) {
+                fallback
+            }
+            done.countDown()
+        }
+        done.await(DISPLAY_THREAD_TIMEOUT_S, TimeUnit.SECONDS)
+        return result
+    }
 
     /**
      * A system context of this process. Shizuku's user service process runs on an
@@ -99,59 +156,67 @@ class ShizukuControlService : IShizukuControl.Stub() {
         dpi: Int,
         surface: Surface?
     ): Int {
-        val manager = displayManager ?: return -1
         if (width <= 0 || height <= 0) return -1
         val safeName = name ?: "bmw-f07"
-        for (flags in FLAG_SETS) {
-            try {
-                val display = manager.createVirtualDisplay(
-                    safeName,
-                    width,
-                    height,
-                    dpi,
-                    surface,
-                    flags
-                )
-                if (display != null) {
-                    val id = display.display.displayId
-                    displays[id] = display
-                    return id
+        return onDisplayThread(-1) {
+            val manager = displayManager ?: return@onDisplayThread -1
+            for (flags in FLAG_SETS) {
+                try {
+                    val display = manager.createVirtualDisplay(
+                        safeName,
+                        width,
+                        height,
+                        dpi,
+                        surface,
+                        flags
+                    )
+                    if (display != null) {
+                        val id = display.display.displayId
+                        displays[id] = display
+                        return@onDisplayThread id
+                    }
+                } catch (t: Throwable) {
+                    // A refused flag set (typically TRUSTED without ADD_TRUSTED_DISPLAY): next.
                 }
-            } catch (t: Throwable) {
-                // A refused flag set (typically TRUSTED without ADD_TRUSTED_DISPLAY): next one.
             }
+            -1
         }
-        return -1
     }
 
     override fun resizeDisplay(displayId: Int, width: Int, height: Int, dpi: Int): Boolean {
-        val display = displays[displayId] ?: return false
         if (width <= 0 || height <= 0) return false
-        return try {
-            display.resize(width, height, dpi)
-            true
-        } catch (t: Throwable) {
-            false
+        return onDisplayThread(false) {
+            val display = displays[displayId] ?: return@onDisplayThread false
+            try {
+                display.resize(width, height, dpi)
+                true
+            } catch (t: Throwable) {
+                false
+            }
         }
     }
 
     override fun setDisplaySurface(displayId: Int, surface: Surface?): Boolean {
-        val display = displays[displayId] ?: return false
-        return try {
-            display.surface = surface
-            true
-        } catch (t: Throwable) {
-            false
+        return onDisplayThread(false) {
+            val display = displays[displayId] ?: return@onDisplayThread false
+            try {
+                display.surface = surface
+                true
+            } catch (t: Throwable) {
+                false
+            }
         }
     }
 
     override fun releaseDisplay(displayId: Int) {
-        displays.remove(displayId)?.let { display ->
+        val display = displays.remove(displayId) ?: return
+        onDisplayThread(false) {
             try {
                 display.release()
             } catch (t: Throwable) {
                 // Already gone.
             }
+            true
         }
     }
 
@@ -235,6 +300,9 @@ class ShizukuControlService : IShizukuControl.Stub() {
 
         /** A virtual device id: the event did not come from a real input device. */
         private const val VIRTUAL_DEVICE_ID = 0
+
+        /** How long a display call may block the calling binder thread. */
+        private const val DISPLAY_THREAD_TIMEOUT_S = 3L
 
         // DisplayManager.VIRTUAL_DISPLAY_FLAG_* (hidden constants).
         private const val FLAG_PUBLIC = 1
