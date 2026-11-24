@@ -66,7 +66,7 @@
     <string name="section_engine">분할 실행 방식</string>
     <string name="engine_virtual">가상 디스플레이 · 창별 배율 (권장)</string>
     <string name="engine_system">자유창 안전 모드 · 앱 재실행 없음</string>
-    <string name="engine_virtual_desc">런처 안에 두 앱을 직접 그립니다. 제목줄이 없고, 가운데 바를 끌면 5:5~2:8로 실시간으로 함께 커지고 줄어들며, 창마다 배율(120~360 dpi)이 적용됩니다. 이 방식은 터치를 가상 화면으로 넘겨 줄 도우미가 필요합니다 — Shizuku(즉시·멀티터치) 또는 접근성 서비스(Android 11+, 한 손가락). 둘 다 없으면 자유창 안전 모드로 자동 실행됩니다.</string>
+    <string name="engine_virtual_desc">런처 안에 두 앱을 직접 그립니다. 제목줄이 없고, 가운데 바를 끌면 5:5~2:8로 실시간으로 함께 커지고 줄어들며, 창마다 배율(120~360 dpi)이 적용됩니다. 이 방식은 Shizuku 권한이 있어야 합니다. 안드로이드는 앱이 스스로 만든 가상 화면에 다른 앱을 띄우지 못하게 막고, Shizuku가 shell 권한으로 신뢰된 화면을 만들어 주어야 앱이 올라갑니다. Shizuku가 없거나 권한이 없으면 자유창 안전 모드로 자동 실행됩니다. (접근성 서비스는 터치 전달을 보조합니다.)</string>
     <string name="engine_system_desc">앱을 지정한 위치에 자유 형식 창으로 띄웁니다. 앱을 고를 때·프리셋을 누를 때만 한 번 실행하고, 비율은 손을 뗀 순간 한 번만 적용합니다. 드래그 중에는 다른 앱의 창을 건드리지 않아 앱이 멈추거나 꺼지지 않습니다. (창별 배율은 기기 기본값)</string>
     <string name="section_ratio">기본 분할 비율</string>
     <string name="section_dpi">창별 앱 화면 배율 · 120~360 dpi (가상 디스플레이)</string>
@@ -112,7 +112,7 @@
     <string name="perm_hidden_apps">숨긴 앱 관리</string>
     <string name="perm_help">도움말</string>
     <string name="perm_shizuku">Shizuku 권한</string>
-    <string name="engine_virtual_needs_touch">Shizuku 또는 접근성 서비스가 꺼져 있어 자유창 안전 모드로 실행합니다. 설정에서 둘 중 하나를 켜면 가상 디스플레이로 바뀝니다.</string>
+    <string name="engine_virtual_needs_touch">Shizuku 권한이 없어 자유창 안전 모드로 실행합니다. 설정에서 Shizuku를 연결하면 가상 디스플레이 방식으로 바뀝니다.</string>
     <string name="shizuku_ready">Shizuku: 연결됨 · 가상 창 터치 사용 가능</string>
     <string name="shizuku_connecting">Shizuku: 연결 중…</string>
     <string name="shizuku_permission">Shizuku: 실행 중 · 권한 필요 (아래 버튼)</string>
@@ -120,7 +120,7 @@
     <string name="shizuku_grant">Shizuku 권한 요청</string>
     <string name="shizuku_granted_toast">Shizuku 권한을 받았습니다. 가상 창에서 터치가 동작합니다.</string>
     <string name="shizuku_denied_toast">Shizuku 권한이 거부되었습니다</string>
-    <string name="shizuku_not_running_toast">Shizuku가 실행 중이 아닙니다. Shizuku 앱에서 시작한 뒤 다시 눌러 주세요.</string>
+    <string name="shizuku_not_running_toast">Shizuku가 실행 중이 아닙니다. Shizuku 앱에서 서비스를 시작한 뒤 다시 눌러 주세요.</string>
     <string name="shizuku_help">Shizuku 안내</string>
     <string name="shizuku_help_body">1. Play 스토어에서 Shizuku를 설치합니다.
 2. Shizuku 앱을 열고 무선 디버깅으로 시작 을 눌러 서비스를 켭니다.

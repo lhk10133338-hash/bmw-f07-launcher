@@ -11,6 +11,10 @@ ARM64 실기기와 x86_64 에뮬레이터(LD플레이어 등) 모두에서 설�
 
 사용자 결정(2026-11-24): "가상디스플레이방식으로 해야겠네" — 자유창 대신 **가상 디스플레이**를 기본으로.
 
+- **가상 디스플레이 방식은 Shizuku가 필요합니다.** 안드로이드는 앱이 스스로 만든 가상 화면에 다른 앱을
+  올리는 것을 거부합니다(`setLaunchDisplayId` → SecurityException, 자기 앱조차). 다른 앱을 올리려면 그 화면이
+  `TRUSTED`여야 하고, 그 플래그는 `ADD_TRUSTED_DISPLAY`(signature|role) 권한이 있어야 합니다. 그래서 **화면 생성
+  자체를 Shizuku의 shell 서비스에서** 합니다. 권한이 없으면 크래시 없이 자유창 안전 모드로 폴백합니다.
 - **가상 디스플레이 창을 실제로 만질 수 있습니다.** 런처 안에 그린 두 앱은 터치를 받지 못했는데,
   이제 판의 `SurfaceView`가 받은 터치를 그 창의 가상 디스플레이로 넘깁니다.
   - 1순위 **Shizuku**: `ShizukuControlService`(adb shell UID 2000, `INJECT_EVENTS`)가
