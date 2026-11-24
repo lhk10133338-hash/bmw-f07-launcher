@@ -25,8 +25,8 @@ android {
         applicationId = "com.hyteck.bmwf07launcher"
         minSdk = 26
         targetSdk = 34
-        versionCode = 7
-        versionName = "3.3"
+        versionCode = 8
+        versionName = "3.4"
     }
 
     buildTypes {
@@ -55,6 +55,9 @@ android {
 
     buildFeatures {
         viewBinding = true
+        // v3.4: Shizuku user service, so a shell-UID process can inject touch into the panes'
+        // virtual displays (IShizukuControl.aidl).
+        aidl = true
     }
 }
 
@@ -62,4 +65,9 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.recyclerview:recyclerview:1.3.2")
+
+    // v3.4: Shizuku. The user service runs with the adb shell UID, which holds INJECT_EVENTS, so
+    // it can hand touches to the two virtual displays (a normal app cannot).
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
 }

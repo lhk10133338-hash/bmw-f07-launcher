@@ -188,7 +188,7 @@
                     <com.hyteck.bmwf07launcher.ui.PaneHandle
                         android:id="@+id/leftHandle"
                         android:layout_width="match_parent"
-                        android:layout_height="20dp"
+                        android:layout_height="28dp"
                         android:contentDescription="@string/pane_handle_hint" />
                 </LinearLayout>
 
@@ -296,7 +296,7 @@
                     <com.hyteck.bmwf07launcher.ui.PaneHandle
                         android:id="@+id/rightHandle"
                         android:layout_width="match_parent"
-                        android:layout_height="20dp"
+                        android:layout_height="28dp"
                         android:contentDescription="@string/pane_handle_hint" />
                 </LinearLayout>
 

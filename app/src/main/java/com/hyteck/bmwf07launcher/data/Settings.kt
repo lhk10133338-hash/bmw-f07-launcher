@@ -56,6 +56,16 @@ class Settings(context: Context) {
         get() = prefs.getBoolean(KEY_ENGINE_MIGRATED_V3, false)
         set(value) = write { it.putBoolean(KEY_ENGINE_MIGRATED_V3, value) }
 
+    /**
+     * v3.4: the user decided on the virtual-display engine (2026-11-24), so an installation is
+     * moved to it once. Whether it actually runs is decided at launch: without Shizuku or the
+     * accessibility service the launcher stays on the free-form engine (see
+     * [com.hyteck.bmwf07launcher.LauncherActivity.effectiveEngine]).
+     */
+    var engineMigratedV4: Boolean
+        get() = prefs.getBoolean(KEY_ENGINE_MIGRATED_V4, false)
+        set(value) = write { it.putBoolean(KEY_ENGINE_MIGRATED_V4, value) }
+
     /** Left pane width percentage, 20..80. */
     var ratio: Int
         get() = prefs.getInt(KEY_RATIO, 50).coerceIn(20, 80)
@@ -264,6 +274,7 @@ class Settings(context: Context) {
         private const val PREFS_NAME = "bmw_launcher_settings"
         private const val KEY_ENGINE = "engine"
         private const val KEY_ENGINE_MIGRATED_V3 = "engine_migrated_v3"
+        private const val KEY_ENGINE_MIGRATED_V4 = "engine_migrated_v4"
         private const val KEY_RATIO = "ratio"
         private const val KEY_LEFT_DPI = "left_dpi"
         private const val KEY_RIGHT_DPI = "right_dpi"

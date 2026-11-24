@@ -31,6 +31,9 @@ import com.hyteck.bmwf07launcher.engine.Side
 import com.hyteck.bmwf07launcher.engine.SplitEngine
 import com.hyteck.bmwf07launcher.engine.SystemSplitEngine
 import com.hyteck.bmwf07launcher.engine.VirtualDisplayEngine
+import com.hyteck.bmwf07launcher.service.LauncherAccessibilityService
+import com.hyteck.bmwf07launcher.shizuku.ShizukuBridge
+import com.hyteck.bmwf07launcher.touch.VirtualTouchRouter
 import com.hyteck.bmwf07launcher.ui.PanePanel
 import com.hyteck.bmwf07launcher.ui.RatioMenu
 import com.hyteck.bmwf07launcher.util.applyImmersive
@@ -66,6 +69,17 @@ class LauncherActivity : ScaledActivity() {
     private var appliedLeftDpi: Int = 0
     private var appliedRightDpi: Int = 0
     private var appliedDockAtLeft: Boolean? = null
+
+    /** v3.4: puts the touches that land on a pane into that pane's virtual display. */
+    private val touchRouter by lazy { VirtualTouchRouter() }
+
+    /** The "Shizuku or 접근성 서비스가 필요합니다" hint is shown once per launch. */
+    private var engineHintShown = false
+
+    /** Fired when Shizuku's binder or the touch service appears: the engine may now be switched. */
+    private val shizukuStateListener: (ShizukuBridge.State) -> Unit = {
+        handler.post { syncEngineWithShizuku() }
+    }
 
     /** Last rectangles handed to the engine, so identical layout passes are not repeated. */
     private var lastBoundsKey: String? = null
@@ -153,6 +167,8 @@ class LauncherActivity : ScaledActivity() {
         settings = Settings(this)
         repo = AppRepository(this)
         apps = repo.apps
+        ShizukuBridge.init(this)
+        ShizukuBridge.addListener(shizukuStateListener)
         migrateEngine()
         leftPanel = PanePanel(this, binding.leftOverlay)
         rightPanel = PanePanel(this, binding.rightOverlay)
@@ -205,11 +221,19 @@ class LauncherActivity : ScaledActivity() {
      * any other privileged helper.
      */
     private fun migrateEngine() {
-        if (settings.engineMigratedV3) return
-        if (settings.engine != Settings.ENGINE_SYSTEM) {
-            settings.engine = Settings.ENGINE_SYSTEM
+        if (!settings.engineMigratedV3) {
+            if (settings.engine != Settings.ENGINE_SYSTEM) {
+                settings.engine = Settings.ENGINE_SYSTEM
+            }
+            settings.engineMigratedV3 = true
         }
-        settings.engineMigratedV3 = true
+        // v3.4: the user chose the virtual-display engine (2026-11-24). The preference is stored
+        // once here; whether it is actually used is decided per launch by [effectiveEngine] —
+        // the virtual engine needs Shizuku or the accessibility service to carry the touch.
+        if (!settings.engineMigratedV4) {
+            settings.engine = Settings.ENGINE_VIRTUAL
+            settings.engineMigratedV4 = true
+        }
     }
 
     private fun setupDock() {
@@ -809,10 +833,10 @@ class LauncherActivity : ScaledActivity() {
     private fun setupEngine() {
         engine?.release()
         lastBoundsKey = null
-        engineMode = settings.engine
+        engineMode = effectiveEngine()
         appliedLeftDpi = settings.leftDpi
         appliedRightDpi = settings.rightDpi
-        engine = if (settings.engine == Settings.ENGINE_VIRTUAL) {
+        engine = if (engineMode == Settings.ENGINE_VIRTUAL) {
             binding.leftSurface.visibility = View.VISIBLE
             binding.rightSurface.visibility = View.VISIBLE
             VirtualDisplayEngine(
@@ -821,14 +845,69 @@ class LauncherActivity : ScaledActivity() {
                 binding.rightSurface,
                 settings,
                 onMessage = { message -> toast(message) },
-                onUnavailable = { message -> handleEngineUnavailable(message) }
+                onUnavailable = { message -> handleEngineUnavailable(message) },
+                touchSink = { displayId, event -> touchRouter.handle(displayId, event) }
             )
         } else {
             binding.leftSurface.visibility = View.GONE
             binding.rightSurface.visibility = View.GONE
             SystemSplitEngine(this) { message -> toast(message) }
         }
+        warnIfVirtualNeedsTouch()
         scheduleBounds(commit = true)
+    }
+
+    /**
+     * The engine the launcher may actually run right now.
+     *
+     * v3.4: the virtual-display engine is the one the user chose, but its panes can only be used
+     * when the touches have a way into the displays — Shizuku (instant, multi-touch) or the
+     * accessibility service (gesture replay, Android 11+). With neither, the free-form engine is
+     * the safe fallback: those windows receive touch by themselves.
+     */
+    private fun effectiveEngine(): String {
+        if (settings.engine != Settings.ENGINE_VIRTUAL) return Settings.ENGINE_SYSTEM
+        return if (virtualTouchAvailable()) Settings.ENGINE_VIRTUAL else Settings.ENGINE_SYSTEM
+    }
+
+    private fun virtualTouchAvailable(): Boolean {
+        if (LauncherAccessibilityService.isEnabled(this)) return true
+        if (ShizukuBridge.isReady()) return true
+        // Shizuku is running and this app is allowed: the shell-side touch service is still
+        // binding, which takes a moment. Choosing the virtual engine now avoids starting every
+        // pane twice (system first, virtual a second later).
+        return ShizukuBridge.isRunning() && ShizukuBridge.isGranted()
+    }
+
+    private fun warnIfVirtualNeedsTouch() {
+        if (engineHintShown) return
+        if (settings.engine != Settings.ENGINE_VIRTUAL) return
+        if (engineMode == Settings.ENGINE_VIRTUAL) return
+        engineHintShown = true
+        toast(getString(R.string.engine_virtual_needs_touch))
+    }
+
+    /**
+     * Shizuku's binder can arrive after the screen is already up (or be granted in the settings
+     * screen). When that happens the stored choice may now be runnable, so the engine is swapped
+     * the same way a change made in the settings screen would be.
+     */
+    private fun syncEngineWithShizuku() {
+        if (!::binding.isInitialized || isFinishing || isDestroyed) return
+        if (leftPanel.isOpen || rightPanel.isOpen) return
+        if (effectiveEngine() == engineMode) return
+        val left = leftPkg
+        val right = rightPkg
+        setupEngine()
+        updateEmptyStates()
+        left?.let { launchApp(Side.LEFT, it) }
+        if (right != null) {
+            if (engine?.inline == true) {
+                launchApp(Side.RIGHT, right)
+            } else {
+                handler.postDelayed({ launchApp(Side.RIGHT, right) }, PANE_GAP_MS)
+            }
+        }
     }
 
     private fun handleEngineUnavailable(message: String) {
@@ -844,7 +923,6 @@ class LauncherActivity : ScaledActivity() {
             handler.postDelayed({ launchApp(Side.RIGHT, right) }, 300L)
         }
     }
-
     // ------------------------------------------------------------------ state
 
     private fun restoreSession() {
@@ -921,6 +999,7 @@ class LauncherActivity : ScaledActivity() {
     override fun onResume() {
         super.onResume()
         applyImmersive()
+        ShizukuBridge.refresh()
         if (appliedUiScale != 0 && appliedUiScale != settings.uiScale) {
             // The launcher UI size changed in the settings screen: rebuild this screen with the
             // new density so every pane keeps its exact rectangle.
@@ -929,7 +1008,7 @@ class LauncherActivity : ScaledActivity() {
             return
         }
 
-        if (engineMode.isNotEmpty() && engineMode != settings.engine) {
+        if (engineMode.isNotEmpty() && engineMode != effectiveEngine()) {
             val left = leftPkg
             val right = rightPkg
             setupEngine()
@@ -984,6 +1063,7 @@ class LauncherActivity : ScaledActivity() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        ShizukuBridge.removeListener(shizukuStateListener)
         binding.introView.onFinished = null
         binding.introView.stop()
         binding.introVideo.release()
@@ -1172,8 +1252,8 @@ class LauncherActivity : ScaledActivity() {
         /** Gap between the dock and a floating window, for its border/shadow (v3.1). */
         private const val DOCK_GAP_DP = 8
 
-        /** Height of the launcher's own handle strip at the bottom of a pane (v3.2). */
-        private const val PANE_STRIP_DP = 20
+        /** Height of the launcher's own handle strip at the bottom of a pane (v3.4: 28dp). */
+        private const val PANE_STRIP_DP = 28
 
         /** A window smaller than this is not placed at all. */
         private const val MIN_PANE_DP = 48

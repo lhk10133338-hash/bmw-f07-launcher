@@ -1,6 +1,7 @@
 package com.hyteck.bmwf07launcher
 
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings as AndroidSettings
@@ -17,16 +18,37 @@ import com.hyteck.bmwf07launcher.util.ScaledActivity
 import com.hyteck.bmwf07launcher.databinding.ActivitySettingsBinding
 import com.hyteck.bmwf07launcher.databinding.ItemPresetEditBinding
 import com.hyteck.bmwf07launcher.service.LauncherAccessibilityService
+import com.hyteck.bmwf07launcher.shizuku.ShizukuBridge
 import com.hyteck.bmwf07launcher.ui.AppPickerDialog
 import com.hyteck.bmwf07launcher.util.applyImmersive
 import com.hyteck.bmwf07launcher.util.dp
 import com.hyteck.bmwf07launcher.util.toast
+import rikka.shizuku.Shizuku
 
 class SettingsActivity : ScaledActivity() {
 
     private lateinit var binding: ActivitySettingsBinding
     private lateinit var settings: Settings
     private lateinit var repo: AppRepository
+
+    /** v3.4: Shizuku's own permission dialog reports back here. */
+    private val shizukuPermissionListener =
+        Shizuku.OnRequestPermissionResultListener { requestCode, grantResult ->
+            if (requestCode != REQUEST_SHIZUKU) return@OnRequestPermissionResultListener
+            val granted = grantResult == PackageManager.PERMISSION_GRANTED
+            toast(
+                getString(
+                    if (granted) R.string.shizuku_granted_toast else R.string.shizuku_denied_toast
+                )
+            )
+            ShizukuBridge.refresh()
+            updateShizukuLabel()
+        }
+
+    /** The bridge reports every change of state (binder arrived, service connected…). */
+    private val shizukuStateListener: (ShizukuBridge.State) -> Unit = {
+        runOnUiThread { updateShizukuLabel() }
+    }
 
     private val presetRows = ArrayList<ItemPresetEditBinding>()
 
@@ -77,11 +99,6 @@ class SettingsActivity : ScaledActivity() {
         if (hasFocus) applyImmersive()
     }
 
-    override fun onResume() {
-        super.onResume()
-        applyImmersive()
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivitySettingsBinding.inflate(layoutInflater)
@@ -92,10 +109,19 @@ class SettingsActivity : ScaledActivity() {
         repo = AppRepository(this)
         appliedScale = settings.uiScale
 
+        ShizukuBridge.init(this)
+        ShizukuBridge.addListener(shizukuStateListener)
+        try {
+            Shizuku.addRequestPermissionResultListener(shizukuPermissionListener)
+        } catch (e: Exception) {
+            // Shizuku is not installed (or too old): the status row still explains it.
+        }
+
         binding.btnBack.setOnClickListener { finish() }
 
         setupStart()
         setupEngine()
+        setupShizuku()
         setupRatio()
         setupDpi()
         setupLauncherScale()
@@ -111,6 +137,23 @@ class SettingsActivity : ScaledActivity() {
     override fun finish() {
         super.finish()
         noTransition()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        applyImmersive()
+        ShizukuBridge.refresh()
+        updateShizukuLabel()
+    }
+
+    override fun onDestroy() {
+        ShizukuBridge.removeListener(shizukuStateListener)
+        try {
+            Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener)
+        } catch (e: Exception) {
+            // Nothing to remove.
+        }
+        super.onDestroy()
     }
 
     @Suppress("DEPRECATION")
@@ -207,14 +250,15 @@ class SettingsActivity : ScaledActivity() {
                (부팅 시 자동 실행이 켜져 있으면 부팅 완료 후에도 스스로 뜹니다.)
 
             2. 분할 방식
-               · 가상 디스플레이: 런처 안에 두 앱을 직접 그립니다. 비율·배율이 즉시 반영됩니다.
-               · 시스템 분할: 자유 형식 창이 켜져 있어야 2:8 같은 비율이 적용됩니다.
+               · 가상 디스플레이(권장): 런처 안에 두 앱을 직접 그립니다. 제목줄이 없고 비율·배율이 즉시 반영됩니다.
+                 창 안의 터치는 Shizuku가 있으면 즉시, 없으면 접근성 서비스가 대신 전달합니다.
+               · 자유창 안전 모드: 자유 형식 창이 켜져 있어야 2:8 같은 비율이 적용됩니다.
                  설정 > 개발자 옵션 > '자유 형식 창'을 켜고, 접근성 서비스를 함께 켜 주세요.
 
             3. 화면 사용법
                · 가운데 얇은 선을 좌우로 끌면 5:5 ~ 2:8로 조절됩니다. 선을 톡 누르면 비율 메뉴.
-               · 각 창 아래 얇은 핸들을 누르면 앱 변경·전체화면·창 비우기·배율 메뉴가 열립니다.
-                 핸들을 길게 누르면 바로 전체화면, 다시 누르면 2분할로 돌아옵니다.
+               · 각 창 아래 반투명 회색 작은 바를 한 번 짧게 누르면 앱 변경·전체화면·앱 배기·화면 배율 메뉴가 열립니다.
+               · 바를 위로 쓰다듬거나 길게 눌러도 같은 메뉴가 열립니다.
                · 독의 + 는 지금 두 앱과 비율을 프리셋으로 저장합니다.
                · 독의 ‹ 를 누르면 독이 숨고, 화면 왼쪽 가장자리의 얇은 선을 누르면 다시 나옵니다.
 
@@ -241,6 +285,54 @@ class SettingsActivity : ScaledActivity() {
             "접근성 서비스: 꺼짐"
         }
         binding.engineDesc.text = "$base\n$accessibility"
+        updateShizukuLabel()
+    }
+
+    // --------------------------------------------------------------- shizuku
+
+    /**
+     * v3.4: the virtual-display engine needs a way to carry touch into its displays. This row
+     * states which of the two helpers is available and asks Shizuku for access in one tap.
+     */
+    private fun setupShizuku() {
+        binding.btnShizuku.setOnClickListener {
+            when (ShizukuBridge.state) {
+                ShizukuBridge.State.READY -> toast(getString(R.string.shizuku_ready))
+                ShizukuBridge.State.CONNECTING -> toast(getString(R.string.shizuku_connecting))
+                ShizukuBridge.State.PERMISSION -> {
+                    if (!ShizukuBridge.requestPermission(REQUEST_SHIZUKU)) {
+                        showShizukuHelp()
+                    }
+                }
+
+                ShizukuBridge.State.NOT_RUNNING -> showShizukuHelp()
+            }
+        }
+        updateShizukuLabel()
+    }
+
+    private fun updateShizukuLabel() {
+        if (!::binding.isInitialized) return
+        val state = ShizukuBridge.state
+        binding.tvShizukuStatus.text = when (state) {
+            ShizukuBridge.State.READY -> getString(R.string.shizuku_ready)
+            ShizukuBridge.State.CONNECTING -> getString(R.string.shizuku_connecting)
+            ShizukuBridge.State.PERMISSION -> getString(R.string.shizuku_permission)
+            ShizukuBridge.State.NOT_RUNNING -> getString(R.string.shizuku_not_running)
+        }
+        binding.btnShizuku.text = if (state == ShizukuBridge.State.PERMISSION) {
+            getString(R.string.shizuku_grant)
+        } else {
+            getString(R.string.perm_shizuku)
+        }
+    }
+
+    private fun showShizukuHelp() {
+        AlertDialog.Builder(this, R.style.Theme_BmwLauncher_Dialog)
+            .setTitle(R.string.shizuku_help)
+            .setMessage(R.string.shizuku_help_body)
+            .setPositiveButton(R.string.close, null)
+            .show()
     }
 
     // ----------------------------------------------------------------- ratio
@@ -548,5 +640,10 @@ class SettingsActivity : ScaledActivity() {
             }
             .setNegativeButton(R.string.close, null)
             .show()
+    }
+
+    private companion object {
+        /** Request code of Shizuku's permission dialog. */
+        const val REQUEST_SHIZUKU = 4201
     }
 }

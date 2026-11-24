@@ -8,6 +8,7 @@ import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.os.Handler
 import android.os.Looper
+import android.view.MotionEvent
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -37,7 +38,12 @@ class VirtualDisplayEngine(
     private val rightSurface: SurfaceView,
     private val settings: Settings,
     private val onMessage: (String) -> Unit,
-    private val onUnavailable: (String) -> Unit
+    private val onUnavailable: (String) -> Unit,
+    /**
+     * v3.4: hands one touch received by a pane to the app on that pane's display
+     * (`displayId`, event). See [com.hyteck.bmwf07launcher.touch.VirtualTouchRouter].
+     */
+    private val touchSink: ((Int, MotionEvent) -> Unit)? = null
 ) : SplitEngine {
 
     override val inline: Boolean = true
@@ -76,6 +82,16 @@ class VirtualDisplayEngine(
     }
 
     private fun register(side: Side, view: SurfaceView) {
+        // v3.4: the pane's SurfaceView is the only place the display's app can be touched, so
+        // every event that lands on it is forwarded to the display the pane is showing.
+        view.isClickable = true
+        view.setOnClickListener { /* the touch itself is forwarded in the listener below */ }
+        view.setOnTouchListener { touched, event ->
+            val displayId = displays[side]?.display?.displayId ?: -1
+            if (displayId >= 0) touchSink?.invoke(displayId, event)
+            if (event.actionMasked == MotionEvent.ACTION_UP) touched.performClick()
+            true
+        }
         view.holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(holder: SurfaceHolder) {
                 attachSurface(side, holder.surface)
@@ -246,7 +262,13 @@ class VirtualDisplayEngine(
         surface: Surface
     ): VirtualDisplay? {
         val name = "bmw-f07-" + (if (side == Side.LEFT) "left" else "right")
+        // v3.4: a trusted display may host another app's activity; PUBLIC is what lets the window
+        // manager place an ordinary task on it at all; SUPPORTS_TOUCH is required for injected or
+        // dispatched touches. Not every firmware grants TRUSTED to an ordinary app, so each
+        // weaker set is tried in turn and a refusal just moves on.
         val flagSets = intArrayOf(
+            FLAG_TRUSTED or FLAG_PUBLIC or FLAG_SUPPORTS_TOUCH,
+            FLAG_TRUSTED or FLAG_PUBLIC or FLAG_SUPPORTS_TOUCH or FLAG_OWN_CONTENT_ONLY,
             FLAG_PUBLIC or FLAG_SUPPORTS_TOUCH,
             FLAG_SUPPORTS_TOUCH,
             0
@@ -340,8 +362,11 @@ class VirtualDisplayEngine(
         private const val SYNC_DELAY_MS = 64L
         private const val FOLLOW_UP_MS = 220L
 
-        // DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC / _SUPPORTS_TOUCH (hidden constants).
+        // DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC / _SUPPORTS_TOUCH / _OWN_CONTENT_ONLY /
+        // _TRUSTED (hidden constants).
         private const val FLAG_PUBLIC = 1
         private const val FLAG_SUPPORTS_TOUCH = 1 shl 6
+        private const val FLAG_OWN_CONTENT_ONLY = 1 shl 3
+        private const val FLAG_TRUSTED = 1 shl 10
     }
 }
