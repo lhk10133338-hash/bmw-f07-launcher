@@ -74,9 +74,15 @@ class LauncherActivity : ScaledActivity() {
     private lateinit var leftPanel: PanePanel
     private lateinit var rightPanel: PanePanel
 
-    /** Frames the launcher has been resumed; the first one belongs to the screen coming up. */
-    private var resumeCount = 0
     private var appliedUiScale = 0
+
+    /**
+     * True only when one of the launcher's own screens (settings / app drawer) is being opened.
+     * The two free-form windows are put back only on the way back from such a screen; when the
+     * user closed an app window with its own × button, the launcher must leave it closed instead
+     * of starting it again (v3.2 reopened it every time, without end).
+     */
+    private var resumeFromOwnScreen = false
 
     /**
      * True while the settings screen or the app drawer is being opened: the restore of the two
@@ -223,6 +229,7 @@ class LauncherActivity : ScaledActivity() {
      */
     private fun openSettings() {
         suppressAutoRestore = true
+        resumeFromOwnScreen = true
         handler.removeCallbacks(restoreRunnable)
         startActivity(Intent(this, SettingsActivity::class.java))
         noTransition()
@@ -230,6 +237,7 @@ class LauncherActivity : ScaledActivity() {
 
     private fun openDrawer() {
         suppressAutoRestore = true
+        resumeFromOwnScreen = true
         handler.removeCallbacks(restoreRunnable)
         startActivity(Intent(this, AppDrawerActivity::class.java))
         noTransition()
@@ -954,14 +962,18 @@ class LauncherActivity : ScaledActivity() {
         updateEmptyStates()
         scheduleBounds(commit = true)
 
-        // Coming back from the settings screen, the app drawer or any other screen: put the two
-        // apps back into their panes (the opaque launcher window was covering them).
-        if (resumeCount > 0) {
-            suppressAutoRestore = false
+        // Only a return from the settings screen or the app drawer puts the two apps back into
+        // their panes (the opaque launcher window was covering them). Any other resume — most of
+        // all the user closing a floating window with its × button — must not start that app
+        // again, or closing it would reopen it forever (v3.2).
+        suppressAutoRestore = false
+        if (resumeFromOwnScreen) {
+            resumeFromOwnScreen = false
             handler.removeCallbacks(restoreRunnable)
             handler.postDelayed(restoreRunnable, RESTORE_DELAY_MS)
+        } else {
+            handler.removeCallbacks(restoreRunnable)
         }
-        resumeCount++
     }
 
     override fun onPause() {

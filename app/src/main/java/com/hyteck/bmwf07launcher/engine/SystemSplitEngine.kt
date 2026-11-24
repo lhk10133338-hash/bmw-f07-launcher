@@ -40,10 +40,16 @@ import com.hyteck.bmwf07launcher.service.LauncherAccessibilityService
  *
  * ## 3.2
  *
- * `FLAG_ACTIVITY_MULTIPLE_TASK` is gone. A placement is a plain `NEW_TASK` (plus
- * `REORDER_TO_FRONT` when an existing task is only raised), so an app that runs a single task —
- * 네이버지도, QQ음악HD — is no longer asked to open a second task of its own activity for the
- * other pane.
+ * `FLAG_ACTIVITY_MULTIPLE_TASK` was removed from a fresh placement, so an app that runs a single
+ * task — 네이버지도, QQ음악HD — is no longer asked to open a second task of its own activity for
+ * the other pane.
+ *
+ * ## 3.3
+ *
+ * That removal took the free-form window with it: without `MULTIPLE_TASK or
+ * RESET_TASK_IF_NEEDED` the firmware ignored the requested 50:50 rectangle and opened the app
+ * full screen (user report, 2026-11-24). A fresh placement therefore asks for those two flags
+ * again, exactly as v3.1 did; a raise (`reorder`) stays a plain `REORDER_TO_FRONT`.
  */
 class SystemSplitEngine(
     private val context: Context,
@@ -173,15 +179,17 @@ class SystemSplitEngine(
             onMessage("앱을 찾을 수 없습니다: $packageName")
             return
         }
-        // v3.2: a fresh placement asks for NEW_TASK only. MULTIPLE_TASK used to be added so one
-        // app could sit in both slots, but a second task of the same activity is what makes
-        // single-task apps (네이버지도, QQ음악HD) answer with a second window, a stale window or
-        // no window at all: those apps keep one instance and their own task. They are now followed
-        // and raised instead, at the cost that the same app in both panes shares its one task.
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
         if (reorder) {
             // Raise the task that is already running; it is not recreated.
             intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+        } else {
+            // v3.3: back to the v3.1 flags. A separate task per pane, opened with RESET_TASK_IF_
+            // NEEDED, is what makes the firmware honour the 50:50 free-form rectangle; without
+            // them (v3.2) the app came up full screen and covered both panes.
+            intent.addFlags(
+                Intent.FLAG_ACTIVITY_MULTIPLE_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+            )
         }
 
         val options = ActivityOptions.makeBasic()
