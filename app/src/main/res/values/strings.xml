@@ -71,6 +71,13 @@
     <string name="section_dpi">창별 앱 화면 배율 · 120~360 dpi (가상 디스플레이)</string>
     <string name="section_launcher_scale">런처 화면 크기</string>
     <string name="launcher_scale_hint">설정·앱 선택기·앱 서랍의 글자와 아이콘 크기를 한 번에 조절합니다. 화면이 답답하면 작게.</string>
+    <string name="section_music">음악 앱 자동 재생</string>
+    <string name="music_pick">음악 앱 지정</string>
+    <string name="music_none">지정 안 함</string>
+    <string name="music_selected">자동 재생 앱: %1$s</string>
+    <string name="switch_auto_play">음악 앱을 열면 자동으로 재생</string>
+    <string name="music_hint">음악 앱을 창·프리셋·부팅 복원으로 열면 약 1.5초 뒤 재생 키를 보내 재생을 시작합니다.</string>
+
     <string name="section_presets">독 프리셋</string>
     <string name="section_intro">시작 인트로</string>
     <string name="section_dock">독</string>

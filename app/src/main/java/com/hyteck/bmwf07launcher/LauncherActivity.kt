@@ -1,11 +1,14 @@
 package com.hyteck.bmwf07launcher
 
+import android.content.Context
 import android.content.Intent
 import android.graphics.Rect
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
@@ -77,6 +80,24 @@ class LauncherActivity : ScaledActivity() {
      * free-form windows must not compete with that screen's transition.
      */
     private var suppressAutoRestore = false
+
+    private val autoPlayRunnable = Runnable {
+        try {
+            val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY))
+            handler.postDelayed({
+                try {
+                    audio.dispatchMediaKeyEvent(
+                        KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY)
+                    )
+                } catch (ignored: Exception) {
+                    // The player went away between the two events; nothing to do.
+                }
+            }, 60L)
+        } catch (ignored: Exception) {
+            // No audio service, or the platform refuses the key: never crash the launcher.
+        }
+    }
 
     private val restoreRunnable = Runnable {
         if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return@Runnable
@@ -619,7 +640,7 @@ class LauncherActivity : ScaledActivity() {
         val pkg = pkgOf(side)
         if (pkg != null && engine?.inline == false) {
             // In system mode the pane is only a placeholder: tapping it re-opens the app.
-            engine?.launch(side, pkg)
+            launchApp(side, pkg)
             return
         }
         openPanePicker(side)
@@ -630,6 +651,27 @@ class LauncherActivity : ScaledActivity() {
     private fun dpiOf(side: Side): Int =
         if (side == Side.LEFT) settings.leftDpi else settings.rightDpi
 
+    /**
+     * Launches [pkg] into [side] and, when it is the music app the user designated in the
+     * settings, starts playback a moment later.
+     */
+    private fun launchApp(side: Side, pkg: String) {
+        engine?.launch(side, pkg)
+        scheduleAutoPlay(pkg)
+    }
+
+    /**
+     * Music players opened from a launcher often come up paused, so a media PLAY key is sent
+     * once the app has had time to show its player (see the user request of 2026-11-24).
+     */
+    private fun scheduleAutoPlay(pkg: String) {
+        if (!settings.autoPlayMusic) return
+        val music = settings.musicPackage ?: return
+        if (music != pkg) return
+        handler.removeCallbacks(autoPlayRunnable)
+        handler.postDelayed(autoPlayRunnable, AUTO_PLAY_DELAY_MS)
+    }
+
     /** Sets (or clears) one pane and remembers it immediately for the next boot. */
     private fun applySide(side: Side, pkg: String?) {
         if (side == Side.LEFT) leftPkg = pkg else rightPkg = pkg
@@ -639,7 +681,7 @@ class LauncherActivity : ScaledActivity() {
         if (pkg == null) {
             current?.clear(side)
         } else {
-            current?.launch(side, pkg)
+            launchApp(side, pkg)
         }
         updateEmptyStates()
         updatePresetHighlight()
@@ -669,8 +711,8 @@ class LauncherActivity : ScaledActivity() {
         updateEmptyStates()
         val left = leftPkg
         val right = rightPkg
-        if (left != null) engine?.launch(Side.LEFT, left)
-        if (right != null) handler.postDelayed({ engine?.launch(Side.RIGHT, right) }, 320L)
+        if (left != null) launchApp(Side.LEFT, left)
+        if (right != null) handler.postDelayed({ launchApp(Side.RIGHT, right) }, 320L)
         toast(getString(R.string.engine_switched_virtual))
     }
 
@@ -684,10 +726,10 @@ class LauncherActivity : ScaledActivity() {
         updatePresetHighlight()
         engine?.clear(Side.LEFT)
         engine?.clear(Side.RIGHT)
-        leftPkg?.let { engine?.launch(Side.LEFT, it) }
+        leftPkg?.let { launchApp(Side.LEFT, it) }
         val right = rightPkg
         if (right != null) {
-            handler.postDelayed({ engine?.launch(Side.RIGHT, right) }, 220L)
+            handler.postDelayed({ launchApp(Side.RIGHT, right) }, 220L)
         }
         scheduleBounds(commit = true)
     }
@@ -767,9 +809,9 @@ class LauncherActivity : ScaledActivity() {
         val right = rightPkg
         setupEngine()
         updateEmptyStates()
-        left?.let { engine?.launch(Side.LEFT, it) }
+        left?.let { launchApp(Side.LEFT, it) }
         if (right != null) {
-            handler.postDelayed({ engine?.launch(Side.RIGHT, right) }, 300L)
+            handler.postDelayed({ launchApp(Side.RIGHT, right) }, 300L)
         }
     }
 
@@ -796,13 +838,13 @@ class LauncherActivity : ScaledActivity() {
         handler.postDelayed({
             if (isFinishing || isDestroyed) return@postDelayed
             applyBounds(commit = false)
-            leftPkg?.let { engine?.launch(Side.LEFT, it) }
+            leftPkg?.let { launchApp(Side.LEFT, it) }
             val right = rightPkg
             if (right != null) {
                 if (engine?.inline == true) {
-                    engine?.launch(Side.RIGHT, right)
+                    launchApp(Side.RIGHT, right)
                 } else {
-                    handler.postDelayed({ engine?.launch(Side.RIGHT, right) }, 320L)
+                    handler.postDelayed({ launchApp(Side.RIGHT, right) }, 320L)
                 }
             }
         }, SESSION_START_DELAY_MS)
@@ -854,8 +896,8 @@ class LauncherActivity : ScaledActivity() {
             val right = rightPkg
             setupEngine()
             updateEmptyStates()
-            left?.let { engine?.launch(Side.LEFT, it) }
-            if (right != null) handler.postDelayed({ engine?.launch(Side.RIGHT, right) }, 320L)
+            left?.let { launchApp(Side.LEFT, it) }
+            if (right != null) handler.postDelayed({ launchApp(Side.RIGHT, right) }, 320L)
         } else {
             val current = engine
             if (current != null && current.supportsDpi) {
@@ -976,6 +1018,7 @@ class LauncherActivity : ScaledActivity() {
         const val EXTRA_PACKAGE = "extra_package"
         const val EXTRA_SIDE = "extra_side"
         private const val RESTORE_DELAY_MS = 280L
+        private const val AUTO_PLAY_DELAY_MS = 1500L
         private const val SESSION_START_DELAY_MS = 140L
     }
 }

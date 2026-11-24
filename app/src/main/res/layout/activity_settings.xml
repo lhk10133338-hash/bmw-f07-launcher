@@ -334,6 +334,53 @@
 
             <TextView
                 style="@style/SettingsSection"
+                android:text="@string/section_music" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/btnPickMusic"
+                    style="@style/SettingsButton"
+                    android:text="@string/music_pick" />
+
+                <TextView
+                    android:id="@+id/btnClearMusic"
+                    style="@style/SettingsButton"
+                    android:layout_marginStart="8dp"
+                    android:text="@string/music_none" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/tvMusicApp"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text=""
+                android:textColor="@color/text_secondary"
+                android:textSize="11sp" />
+
+            <androidx.appcompat.widget.SwitchCompat
+                android:id="@+id/switchAutoPlay"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingTop="6dp"
+                android:paddingBottom="2dp"
+                android:text="@string/switch_auto_play"
+                android:textColor="@color/text_primary"
+                android:textSize="13sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/music_hint"
+                android:textColor="@color/text_secondary"
+                android:textSize="10sp" />
+
+            <TextView
+                style="@style/SettingsSection"
                 android:text="@string/section_presets" />
 
             <LinearLayout

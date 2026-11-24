@@ -66,6 +66,7 @@ class SettingsActivity : ScaledActivity() {
         setupRatio()
         setupDpi()
         setupLauncherScale()
+        setupMusic()
         setupPresets()
         setupDock()
         setupPermissions()
@@ -310,6 +311,35 @@ class SettingsActivity : ScaledActivity() {
                 }
             }
         })
+    }
+
+    // ----------------------------------------------------------------- music
+
+    private fun setupMusic() {
+        updateMusicLabel()
+        binding.switchAutoPlay.isChecked = settings.autoPlayMusic
+        binding.switchAutoPlay.setOnCheckedChangeListener { _, checked ->
+            settings.autoPlayMusic = checked
+        }
+        binding.btnPickMusic.setOnClickListener {
+            AppPickerDialog.show(this, getString(R.string.music_pick), repo.apps) { pkg ->
+                settings.musicPackage = pkg
+                updateMusicLabel()
+            }
+        }
+        binding.btnClearMusic.setOnClickListener {
+            settings.musicPackage = null
+            updateMusicLabel()
+        }
+    }
+
+    private fun updateMusicLabel() {
+        val pkg = settings.musicPackage
+        binding.tvMusicApp.text = if (pkg == null) {
+            getString(R.string.music_none)
+        } else {
+            getString(R.string.music_selected, repo.labelOf(pkg))
+        }
     }
 
     // --------------------------------------------------------------- presets

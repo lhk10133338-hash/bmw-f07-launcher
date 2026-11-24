@@ -58,6 +58,15 @@ class Settings(context: Context) {
         get() = prefs.getInt(KEY_RIGHT_DPI, DEFAULT_DPI).coerceIn(MIN_DPI, MAX_DPI)
         set(value) = write { it.putInt(KEY_RIGHT_DPI, value.coerceIn(MIN_DPI, MAX_DPI)) }
 
+    /** Music app opened from the launcher; playback starts automatically when set. */
+    var musicPackage: String?
+        get() = prefs.getString(KEY_MUSIC_PACKAGE, null)
+        set(value) = putString(KEY_MUSIC_PACKAGE, value)
+
+    var autoPlayMusic: Boolean
+        get() = prefs.getBoolean(KEY_AUTO_PLAY, true)
+        set(value) = write { it.putBoolean(KEY_AUTO_PLAY, value) }
+
     /**
      * Size of the launcher's own UI (settings, app picker, app drawer) in percent.
      * 100 uses the device density; lower values fit more on a 2560×720 screen.
@@ -238,6 +247,8 @@ class Settings(context: Context) {
         private const val KEY_LEFT_DPI = "left_dpi"
         private const val KEY_RIGHT_DPI = "right_dpi"
         private const val KEY_UI_SCALE = "ui_scale"
+        private const val KEY_MUSIC_PACKAGE = "music_package"
+        private const val KEY_AUTO_PLAY = "music_auto_play"
         private const val KEY_DOCK_LEFT = "dock_left"
         private const val KEY_DOCK_AUTO_HIDE = "dock_auto_hide"
         private const val KEY_DOCK_HIDDEN = "dock_hidden"
