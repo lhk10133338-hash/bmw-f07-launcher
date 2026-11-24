@@ -30,6 +30,13 @@ import com.hyteck.bmwf07launcher.service.LauncherAccessibilityService
  *     two running tasks again (no bounds, no restart), so they are not left behind the launcher.
  *  4. If the firmware refuses free-form bounds, the apps simply open where the system puts them:
  *     the launcher reports it once and never retries, so no app is ever restarted in a loop.
+ *
+ * ## 3.1
+ *
+ * The free-form window is also kept off the launcher's dock. v3.0 left only 2dp between the
+ * dock and the left pane, and a window's own border/shadow reached past that onto the dock,
+ * where it swallowed the first tap on the dock buttons. [setDockKeepOut] carries the dock's edge
+ * here, and every rectangle is clamped against it before a launch and before a re-place.
  */
 class SystemSplitEngine(
     private val context: Context,
@@ -48,6 +55,10 @@ class SystemSplitEngine(
     private val applied = HashMap<Side, Rect>()
 
     private val queue = ArrayList<Runnable>()
+
+    /** Screen-x edges the launcher's dock keeps out of reach; 0 means no dock on that side. */
+    private var dockMinLeft = 0
+    private var dockMaxRight = 0
 
     private var released = false
     private var lastLaunchAt = 0L
@@ -73,10 +84,20 @@ class SystemSplitEngine(
         }
     }
 
+    /**
+     * Remembers where the launcher's dock is, so no floating window is ever placed or launched on
+     * top of it (v3.1: an app window that covered the dock stole the first tap from its buttons).
+     */
+    override fun setDockKeepOut(minLeft: Int, maxRight: Int) {
+        if (released) return
+        dockMinLeft = minLeft.coerceAtLeast(0)
+        dockMaxRight = maxRight.coerceAtLeast(0)
+    }
+
     override fun applyBounds(left: Rect, right: Rect, commit: Boolean) {
         if (released) return
-        bounds[Side.LEFT] = Rect(left)
-        bounds[Side.RIGHT] = Rect(right)
+        bounds[Side.LEFT] = keepOffDock(Side.LEFT, left)
+        bounds[Side.RIGHT] = keepOffDock(Side.RIGHT, right)
         // While the divider is being dragged nothing outside this app is touched at all.
         if (!commit) return
 
@@ -157,9 +178,12 @@ class SystemSplitEngine(
         }
 
         val options = ActivityOptions.makeBasic()
-        if (rect != null && rect.width() > 32 && rect.height() > 32) {
-            options.setLaunchBounds(rect)
-            applied[side] = Rect(rect)
+        // The rectangle is re-checked here as well: a launch may use bounds that were stored
+        // before the dock moved or came back, and the window must still stay off the dock.
+        val target = if (rect == null) null else keepOffDock(side, rect)
+        if (target != null && target.width() > 32 && target.height() > 32) {
+            options.setLaunchBounds(target)
+            applied[side] = Rect(target)
         }
         applyFreeformMode(options)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -212,6 +236,23 @@ class SystemSplitEngine(
         val runnable = Runnable { if (!released) block() }
         queue.add(runnable)
         handler.postDelayed(runnable, delay)
+    }
+
+    /**
+     * Moves [rect] out of the dock's strip, keeping it the same size where possible. A rectangle
+     * the dock would squeeze down to an unusable width is left as it is.
+     */
+    private fun keepOffDock(side: Side, rect: Rect): Rect {
+        if (dockMinLeft <= 0 && dockMaxRight <= 0) return Rect(rect)
+        val safe = Rect(rect)
+        if (side == Side.LEFT && dockMinLeft > 0 && safe.left < dockMinLeft) {
+            safe.left = dockMinLeft
+        }
+        if (side == Side.RIGHT && dockMaxRight > 0 && safe.right > dockMaxRight) {
+            safe.right = dockMaxRight
+        }
+        if (safe.width() <= 32 || safe.height() <= 32) return Rect(rect)
+        return safe
     }
 
     private fun sameRect(a: Rect?, b: Rect?): Boolean {

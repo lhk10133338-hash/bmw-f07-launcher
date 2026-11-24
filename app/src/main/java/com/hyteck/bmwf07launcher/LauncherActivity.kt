@@ -565,19 +565,27 @@ class LauncherActivity : ScaledActivity() {
         val right = binding.split.screenRectOf(Side.RIGHT)
         if (left.width() <= 0 || right.width() <= 0) return
         // A floating app window must never start on top of the dock: the dock's own buttons
-        // would lose their first tap to the window above them.
+        // would lose their first tap to the window above them. v3.0 used 2dp, which was not
+        // enough — a free-form window carries its border/shadow a few pixels outside the
+        // rectangle it was handed, so its left edge still sat on the dock and swallowed taps.
         val dock = dockRectOnScreen()
+        val gap = dp(DOCK_GAP_DP)
+        var minLeft = 0
+        var maxRight = 0
         if (dock != null) {
-            val margin = dp(2)
             if (settings.dockAtLeft) {
-                if (left.left < dock.right + margin) left.left = dock.right + margin
-            } else if (right.right > dock.left - margin) {
-                right.right = dock.left - margin
+                // Never closer than the dock's own right edge plus the gap (or its width + gap).
+                minLeft = maxOf(dock.right, dock.width()) + gap
+                if (left.left < minLeft) left.left = minLeft
+            } else {
+                maxRight = dock.left - gap
+                if (right.right > maxRight) right.right = maxRight
             }
         }
+        current.setDockKeepOut(minLeft, maxRight)
         // Layout callbacks, the divider and onResume all report the same rectangles; hand them
         // to the engine once so the windows are not re-placed (and the screen does not jump).
-        val key = "$commit|${left.toShortString()}|${right.toShortString()}"
+        val key = "$commit|${left.toShortString()}|${right.toShortString()}|$minLeft|$maxRight"
         if (key == lastBoundsKey) return
         lastBoundsKey = key
         current.applyBounds(left, right, commit || current.inline)
@@ -1033,6 +1041,9 @@ class LauncherActivity : ScaledActivity() {
         private const val RESTORE_DELAY_MS = 280L
         private const val AUTO_PLAY_DELAY_MS = 1500L
         private const val SESSION_START_DELAY_MS = 140L
+
+        /** Gap between the dock and a floating window, for its border/shadow (v3.1). */
+        private const val DOCK_GAP_DP = 8
 
         /** Gap between starting the two panes: one launch each, never in the same frame. */
         private const val PANE_GAP_MS = 350L

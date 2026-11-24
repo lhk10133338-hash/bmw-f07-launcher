@@ -1,22 +1,28 @@
 package com.hyteck.bmwf07launcher.ui
 
 import android.content.Context
-import android.graphics.Matrix
 import android.graphics.SurfaceTexture
 import android.media.MediaPlayer
 import android.net.Uri
 import android.util.AttributeSet
+import android.view.Gravity
 import android.view.Surface
 import android.view.TextureView
+import android.view.View
+import android.widget.FrameLayout
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 /**
  * Video surface for the start-up intro.
  *
- * The clip keeps its original aspect ratio and is fitted to the screen height, centred: a 16:9
- * clip on the 2560×720 head unit is scaled by min(viewW/videoW, viewH/videoH), so nothing is cut
- * off and the leftover side area stays pure black. (It used to be centre-cropped, which the user
- * reported as "너무 배율이 들어갔어" — the picture was zoomed up and cut top and bottom.)
+ * v3.1: the clip is shown at its own resolution, centred, with no matrix at all. A TextureView
+ * stretches whatever it draws over its whole view, so v3.0 laid a `setTransform` matrix over a
+ * full-screen view to undo that stretch — and whenever that matrix disagreed with the real view
+ * size the picture came out stretched sideways. Now the *view itself* is given the video's own
+ * ratio: the smaller of min(parentW/videoW, parentH/videoH) fits the clip inside the intro layer,
+ * the view is that many pixels wide and high and the parent centres it. Nothing is scaled beyond
+ * its original pixels, nothing is cropped, and no matrix can drift.
  */
 class CroppedVideoView @JvmOverloads constructor(
     context: Context,
@@ -26,7 +32,8 @@ class CroppedVideoView @JvmOverloads constructor(
     TextureView.SurfaceTextureListener,
     MediaPlayer.OnPreparedListener,
     MediaPlayer.OnCompletionListener,
-    MediaPlayer.OnErrorListener {
+    MediaPlayer.OnErrorListener,
+    MediaPlayer.OnVideoSizeChangedListener {
 
     var onFinished: (() -> Unit)? = null
     var onFailed: (() -> Unit)? = null
@@ -36,6 +43,14 @@ class CroppedVideoView @JvmOverloads constructor(
     private var pendingUri: Uri? = null
     private var videoWidth = 0
     private var videoHeight = 0
+
+    /** Re-fits the clip when the intro layer is measured or the screen size changes. */
+    private val parentLayoutListener = View.OnLayoutChangeListener {
+            _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+        if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
+            fitToParent()
+        }
+    }
 
     init {
         surfaceTextureListener = this
@@ -88,6 +103,7 @@ class CroppedVideoView @JvmOverloads constructor(
             mp.setOnPreparedListener(this)
             mp.setOnCompletionListener(this)
             mp.setOnErrorListener(this)
+            mp.setOnVideoSizeChangedListener(this)
             mp.setSurface(videoSurface)
             mp.setDataSource(context, uri)
             mp.isLooping = false
@@ -99,9 +115,7 @@ class CroppedVideoView @JvmOverloads constructor(
     }
 
     override fun onPrepared(mp: MediaPlayer) {
-        videoWidth = mp.videoWidth
-        videoHeight = mp.videoHeight
-        updateMatrix()
+        takeVideoSize(mp)
         try {
             mp.setVolume(0f, 0f)
         } catch (ignored: Exception) {
@@ -114,6 +128,19 @@ class CroppedVideoView @JvmOverloads constructor(
         }
     }
 
+    override fun onVideoSizeChanged(mp: MediaPlayer, width: Int, height: Int) {
+        takeVideoSize(mp)
+    }
+
+    private fun takeVideoSize(mp: MediaPlayer) {
+        val w = mp.videoWidth
+        val h = mp.videoHeight
+        if (w <= 0 || h <= 0) return
+        videoWidth = w
+        videoHeight = h
+        fitToParent()
+    }
+
     override fun onCompletion(mp: MediaPlayer) {
         onFinished?.invoke()
     }
@@ -121,6 +148,17 @@ class CroppedVideoView @JvmOverloads constructor(
     override fun onError(mp: MediaPlayer, what: Int, extra: Int): Boolean {
         onFailed?.invoke()
         return true
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        (parent as? View)?.addOnLayoutChangeListener(parentLayoutListener)
+        post { fitToParent() }
+    }
+
+    override fun onDetachedFromWindow() {
+        (parent as? View)?.removeOnLayoutChangeListener(parentLayoutListener)
+        super.onDetachedFromWindow()
     }
 
     override fun onSurfaceTextureAvailable(st: SurfaceTexture, width: Int, height: Int) {
@@ -135,12 +173,12 @@ class CroppedVideoView @JvmOverloads constructor(
             } catch (ignored: Exception) {
                 // Ignore; the player is being torn down.
             }
-            updateMatrix()
+            fitToParent()
         }
     }
 
     override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, width: Int, height: Int) {
-        updateMatrix()
+        // The view is sized to the clip's own ratio, so a surface resize needs no matrix.
     }
 
     override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
@@ -158,24 +196,30 @@ class CroppedVideoView @JvmOverloads constructor(
         // No-op.
     }
 
-    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        super.onSizeChanged(w, h, oldw, oldh)
-        updateMatrix()
-    }
-
     /**
-     * Fit-centre: keep the clip's own aspect ratio and fit it inside the view, centred. The
-     * smaller of the two ratios wins, so a clip that is wider than the screen is scaled down to
-     * the width instead of being cropped.
+     * Sizes the view to the clip's own pixels: keep the video's aspect ratio, fit it inside the
+     * intro layer (the smaller of the two ratios wins, so nothing is cropped), never enlarge a
+     * clip beyond its own resolution, and let the parent centre it on black.
      */
-    private fun updateMatrix() {
+    private fun fitToParent() {
         if (videoWidth <= 0 || videoHeight <= 0) return
-        val viewWidth = width.toFloat()
-        val viewHeight = height.toFloat()
-        if (viewWidth <= 0f || viewHeight <= 0f) return
-        val scale = min(viewWidth / videoWidth, viewHeight / videoHeight)
-        val matrix = Matrix()
-        matrix.setScale(scale, scale, viewWidth / 2f, viewHeight / 2f)
-        setTransform(matrix)
+        val container = parent as? View ?: return
+        val availableWidth = container.width
+        val availableHeight = container.height
+        if (availableWidth <= 0 || availableHeight <= 0) return
+
+        val fit = min(
+            availableWidth.toFloat() / videoWidth,
+            availableHeight.toFloat() / videoHeight
+        ).coerceAtMost(1f)
+        val targetWidth = (videoWidth * fit).roundToInt().coerceAtLeast(1)
+        val targetHeight = (videoHeight * fit).roundToInt().coerceAtLeast(1)
+
+        val current = layoutParams
+        if (current != null && current.width == targetWidth && current.height == targetHeight) {
+            return
+        }
+        layoutParams = FrameLayout.LayoutParams(targetWidth, targetHeight, Gravity.CENTER)
+        requestLayout()
     }
 }
