@@ -2,6 +2,8 @@ package com.hyteck.bmwf07launcher
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Rect
 import android.media.AudioManager
 import android.net.Uri
@@ -33,6 +35,7 @@ import com.hyteck.bmwf07launcher.ui.PanePanel
 import com.hyteck.bmwf07launcher.ui.RatioMenu
 import com.hyteck.bmwf07launcher.util.applyImmersive
 import com.hyteck.bmwf07launcher.util.dp
+import com.hyteck.bmwf07launcher.util.setOnLongPressAction
 import com.hyteck.bmwf07launcher.util.toast
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -466,28 +469,18 @@ class LauncherActivity : ScaledActivity() {
         binding.leftEmpty.setOnClickListener { pickApp(Side.LEFT) }
         binding.rightEmpty.setOnClickListener { pickApp(Side.RIGHT) }
         // A long press anywhere on the pane (its empty area or its handle) opens that pane's own
-        // inline menu: change app · remove app · scale · fullscreen.
-        binding.leftEmpty.setOnLongClickListener {
-            openPaneMenu(Side.LEFT)
-            true
-        }
-        binding.rightEmpty.setOnLongClickListener {
-            openPaneMenu(Side.RIGHT)
-            true
-        }
+        // inline menu: 앱 변경·선택 · 전체화면 · 앱 빼기. v3.2 fires it after ~0.8 s for both, so the
+        // menu appears while the finger is still down instead of only when the platform's own
+        // (shorter, easily missed) long-click happens to come through.
+        binding.leftEmpty.setOnLongPressAction { openPaneMenu(Side.LEFT) }
+        binding.rightEmpty.setOnLongPressAction { openPaneMenu(Side.RIGHT) }
 
-        binding.leftHandle.setOnClickListener { openPaneMenu(Side.LEFT) }
-        binding.leftHandle.setOnLongClickListener {
-            openPaneMenu(Side.LEFT)
-            true
-        }
+        binding.leftHandle.onTap = { openPaneMenu(Side.LEFT) }
+        binding.leftHandle.onLongPress = { openPaneMenu(Side.LEFT) }
         binding.leftHandle.onSwipeUp = { openPaneMenu(Side.LEFT) }
 
-        binding.rightHandle.setOnClickListener { openPaneMenu(Side.RIGHT) }
-        binding.rightHandle.setOnLongClickListener {
-            openPaneMenu(Side.RIGHT)
-            true
-        }
+        binding.rightHandle.onTap = { openPaneMenu(Side.RIGHT) }
+        binding.rightHandle.onLongPress = { openPaneMenu(Side.RIGHT) }
         binding.rightHandle.onSwipeUp = { openPaneMenu(Side.RIGHT) }
 
         binding.leftFullExit.setOnClickListener { setFullscreen(null) }
@@ -625,6 +618,7 @@ class LauncherActivity : ScaledActivity() {
         panelOf(side).showMenu(
             title = paneTitle(side),
             subtitle = subtitle,
+            hasApp = pkg != null,
             dpi = if (virtual) dpiOf(side) else null,
             isFullscreen = fullscreen == side,
             onPickApp = { openPanePicker(side) },
@@ -900,10 +894,18 @@ class LauncherActivity : ScaledActivity() {
         }
     }
 
+    /**
+     * A dialog, the keyboard or a focus change gives the system bars back: hide them again the
+     * moment this screen owns the focus, so no status or navigation bar stays over the panes.
+     */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) applyImmersive()
+    }
+
     override fun onResume() {
         super.onResume()
         applyImmersive()
-
         if (appliedUiScale != 0 && appliedUiScale != settings.uiScale) {
             // The launcher UI size changed in the settings screen: rebuild this screen with the
             // new density so every pane keeps its exact rectangle.
@@ -966,6 +968,7 @@ class LauncherActivity : ScaledActivity() {
         binding.introView.onFinished = null
         binding.introView.stop()
         binding.introVideo.release()
+        binding.introImage.setImageDrawable(null)
         engine?.release()
         engine = null
         super.onDestroy()
@@ -980,16 +983,109 @@ class LauncherActivity : ScaledActivity() {
         binding.introLayer.alpha = 1f
         binding.introLayer.setOnClickListener { finishIntro() }
 
-        val uri = settings.introVideoUri
-        if (uri != null) {
-            playVideoIntro(uri)
-        } else {
-            binding.introView.visibility = View.VISIBLE
-            binding.introVideo.visibility = View.GONE
-            binding.introView.onFinished = { finishIntro() }
-            binding.introView.start()
+        val uriValue = settings.introVideoUri?.let { Uri.parse(it) }
+        when {
+            uriValue != null && isImageIntro(uriValue) -> playImageIntro(uriValue)
+            uriValue != null -> playVideoIntro(uriValue.toString())
+            else -> playAnimatedIntro()
         }
     }
+
+    /**
+     * True when the chosen intro file is a picture. The MIME type stored at pick time is used
+     * first; an installation that chose a video before v3.2 has none, so the file name decides.
+     */
+    private fun isImageIntro(uri: Uri): Boolean {
+        val stored = settings.introMediaType
+        if (stored != null) return stored.startsWith("image")
+        val type = try {
+            contentResolver.getType(uri)
+        } catch (e: Exception) {
+            null
+        }
+        if (type != null) return type.startsWith("image")
+        val name = (uri.lastPathSegment ?: uri.toString()).lowercase()
+        return IMAGE_SUFFIXES.any { name.endsWith(".$it") }
+    }
+
+    private fun playAnimatedIntro() {
+        binding.introImage.visibility = View.GONE
+        binding.introImage.setImageDrawable(null)
+        binding.introVideo.visibility = View.GONE
+        binding.introView.visibility = View.VISIBLE
+        binding.introView.onFinished = { finishIntro() }
+        binding.introView.start()
+    }
+
+    /**
+     * A picture intro: shown whole in the middle of the black screen (no cropping) and finished by
+     * itself after about 2.5 s. A touch anywhere skips it at once, and no hint is drawn.
+     */
+    private fun playImageIntro(uri: Uri) {
+        binding.introView.onFinished = null
+        binding.introView.stop()
+        binding.introView.visibility = View.GONE
+        binding.introVideo.stopPlayback()
+        binding.introVideo.release()
+        binding.introVideo.visibility = View.GONE
+        binding.introImage.setImageDrawable(null)
+        binding.introImage.visibility = View.VISIBLE
+        loadIntroImage(uri)
+        handler.removeCallbacks(introImageFinishRunnable)
+        handler.postDelayed(introImageFinishRunnable, INTRO_IMAGE_MS)
+    }
+
+    /**
+     * Decodes the chosen picture in the background at the size of the screen, so a full-size phone
+     * photo neither blocks the first frame nor exhausts the heap of a head unit. A file that
+     * cannot be decoded falls back to the built-in M animation instead of leaving a black screen.
+     */
+    private fun loadIntroImage(uri: Uri) {
+        val targetW = binding.introImage.width.takeIf { it > 0 }
+            ?: resources.displayMetrics.widthPixels
+        val targetH = binding.introImage.height.takeIf { it > 0 }
+            ?: resources.displayMetrics.heightPixels
+        Thread {
+            val bitmap = try {
+                decodeScaled(uri, targetW, targetH)
+            } catch (e: Exception) {
+                null
+            } catch (o: OutOfMemoryError) {
+                null
+            }
+            handler.post {
+                if (!introShowing || isFinishing || isDestroyed) {
+                    bitmap?.recycle()
+                    return@post
+                }
+                if (bitmap == null) {
+                    handler.removeCallbacks(introImageFinishRunnable)
+                    restartAnimatedIntro()
+                } else {
+                    binding.introImage.setImageBitmap(bitmap)
+                }
+            }
+        }.start()
+    }
+
+    private fun decodeScaled(uri: Uri, maxWidth: Int, maxHeight: Int): Bitmap? {
+        val resolver = contentResolver
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        while (bounds.outWidth / (sample * 2) >= maxWidth ||
+            bounds.outHeight / (sample * 2) >= maxHeight
+        ) {
+            sample *= 2
+        }
+        val options = BitmapFactory.Options().apply { inSampleSize = sample }
+        return resolver.openInputStream(uri)?.use {
+            BitmapFactory.decodeStream(it, null, options)
+        }
+    }
+
+    private val introImageFinishRunnable = Runnable { finishIntro() }
 
     private fun playVideoIntro(uri: String) {
         binding.introView.stop()
@@ -1008,6 +1104,8 @@ class LauncherActivity : ScaledActivity() {
     private fun restartAnimatedIntro() {
         binding.introVideo.visibility = View.GONE
         binding.introVideo.release()
+        binding.introImage.visibility = View.GONE
+        binding.introImage.setImageDrawable(null)
         binding.introView.visibility = View.VISIBLE
         binding.introView.onFinished = { finishIntro() }
         binding.introView.start()
@@ -1016,11 +1114,14 @@ class LauncherActivity : ScaledActivity() {
     private fun finishIntro() {
         if (!introShowing) return
         introShowing = false
+        handler.removeCallbacks(introImageFinishRunnable)
         binding.introView.onFinished = null
         binding.introView.stop()
         binding.introVideo.stopPlayback()
         binding.introVideo.release()
         binding.introVideo.visibility = View.GONE
+        binding.introImage.visibility = View.GONE
+        binding.introImage.setImageDrawable(null)
         binding.introLayer.animate()
             .alpha(0f)
             .setDuration(260L)
@@ -1041,6 +1142,13 @@ class LauncherActivity : ScaledActivity() {
         private const val RESTORE_DELAY_MS = 280L
         private const val AUTO_PLAY_DELAY_MS = 1500L
         private const val SESSION_START_DELAY_MS = 140L
+
+        /** A picture intro stays about this long unless it is touched (v3.2). */
+        private const val INTRO_IMAGE_MS = 2500L
+
+        private val IMAGE_SUFFIXES = listOf(
+            "jpg", "jpeg", "png", "webp", "bmp", "gif", "heic", "heif"
+        )
 
         /** Gap between the dock and a floating window, for its border/shadow (v3.1). */
         private const val DOCK_GAP_DP = 8

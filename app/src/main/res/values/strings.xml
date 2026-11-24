@@ -22,16 +22,17 @@
     <string name="app_add">앱 추가</string>
     <string name="app_add_hint">터치해서 설치된 앱 선택</string>
     <string name="pane_reopen_hint">터치하면 다시 엽니다</string>
-    <string name="pane_handle_hint">탭 또는 길게 누르면 창 메뉴</string>
-    <string name="pane_change_app">앱 변경</string>
+    <string name="pane_handle_hint">짧게 누르거나 1초 길게 누르면 창 메뉴</string>
+    <string name="pane_change_app">앱 변경 · 선택</string>
+    <string name="pane_pick_app">앱 선택</string>
     <string name="pane_fullscreen">전체화면</string>
     <string name="pane_clear">앱 빼기</string>
     <string name="pane_scale">화면 배율</string>
-    <string name="pane_restore">2분할 복귀</string>
+    <string name="pane_restore">전체화면 해제</string>
     <string name="pane_cleared">창을 비웠습니다</string>
     <string name="pane_menu_close">메뉴 닫기</string>
-    <string name="pane_pick_hint">아래에서 앱을 고르면 이 창에서 바로 열립니다</string>
-    <string name="pane_pick_none">선택 안 함</string>
+    <string name="pane_pick_hint">아래에서 앱을 누르면 이 창에서 바로 열립니다</string>
+    <string name="pane_pick_none">앱 빼기</string>
     <string name="picker_search_hint">앱 이름 검색</string>
     <string name="picker_no_result">검색 결과가 없습니다</string>
     <string name="picker_current">사용 중</string>
@@ -90,10 +91,10 @@
     <string name="switch_dock_auto_hide">독 자동 숨김 (몇 초 뒤)</string>
     <string name="intro_enabled">시작할 때 인트로 재생</string>
     <string name="intro_skip_return">홈으로 돌아올 때는 건너뛰기</string>
-    <string name="intro_pick_video">동영상 선택 (.mp4)</string>
+    <string name="intro_pick_video">사진·동영상 선택</string>
     <string name="intro_reset_video">기본 M 인트로</string>
     <string name="intro_video_none">기본 M 인트로 (내장 애니메이션)</string>
-    <string name="intro_video_selected">선택한 동영상: %1$s</string>
+    <string name="intro_video_selected">선택한 인트로: %1$s</string>
 
     <string name="btn_import_defaults">BMW 추천 6종 프리셋 불러오기</string>
     <string name="imported">프리셋 %1$d개를 독에 넣었습니다</string>

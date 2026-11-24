@@ -28,6 +28,17 @@ class AppDrawerActivity : ScaledActivity() {
     private lateinit var settings: Settings
     private lateinit var repo: AppRepository
 
+    /** The bars come back after a dialog or a focus change: hide them again at once (v3.2). */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) applyImmersive()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        applyImmersive()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityAppDrawerBinding.inflate(layoutInflater)

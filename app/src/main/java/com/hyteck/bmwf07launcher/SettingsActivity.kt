@@ -33,20 +33,53 @@ class SettingsActivity : ScaledActivity() {
     /** UI scale this screen was built with, so the screen knows when it has to be rebuilt. */
     private var appliedScale = 0
 
-    private val pickVideo = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            try {
-                contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+    private val pickIntroMedia =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) {
+                try {
+                    contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                } catch (ignored: SecurityException) {
+                    // Some document providers do not offer persistable access.
+                }
+                // v3.2: a picture is a valid intro too, so the MIME type is remembered next to the
+                // URI and the launcher knows whether to decode an image or play a video.
+                settings.introVideoUri = uri.toString()
+                settings.introMediaType = resolveMediaType(uri)
+                updateVideoName()
+                toast(
+                    if (isImageType(settings.introMediaType)) "인트로 사진을 지정했습니다"
+                    else "인트로 동영상을 지정했습니다"
                 )
-            } catch (ignored: SecurityException) {
-                // Some document providers do not offer persistable access.
             }
-            settings.introVideoUri = uri.toString()
-            updateVideoName()
-            toast("인트로 동영상을 지정했습니다")
         }
+
+    /** MIME type of a picked document, from the provider or, failing that, from its name. */
+    private fun resolveMediaType(uri: Uri): String {
+        val fromProvider = try {
+            contentResolver.getType(uri)
+        } catch (e: Exception) {
+            null
+        }
+        if (fromProvider != null) return fromProvider
+        val name = (uri.lastPathSegment ?: uri.toString()).lowercase()
+        val images = listOf("jpg", "jpeg", "png", "webp", "bmp", "gif", "heic", "heif")
+        return if (images.any { name.endsWith(".$it") }) "image/*" else "video/*"
+    }
+
+    private fun isImageType(type: String?): Boolean = type?.startsWith("image") == true
+
+    /** The bars come back after a dialog or a focus change: hide them again at once (v3.2). */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) applyImmersive()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        applyImmersive()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -107,13 +140,15 @@ class SettingsActivity : ScaledActivity() {
         }
         binding.btnPickVideo.setOnClickListener {
             try {
-                pickVideo.launch(arrayOf("video/*"))
+                // Both kinds of media: the launcher shows a picture for ~2.5 s or plays a video.
+                pickIntroMedia.launch(arrayOf("video/*", "image/*"))
             } catch (e: Exception) {
-                toast("동영상 선택기를 열 수 없습니다")
+                toast("사진/동영상 선택기를 열 수 없습니다")
             }
         }
         binding.btnResetVideo.setOnClickListener {
             settings.introVideoUri = null
+            settings.introMediaType = null
             updateVideoName()
             toast("기본 M 인트로를 사용합니다")
         }

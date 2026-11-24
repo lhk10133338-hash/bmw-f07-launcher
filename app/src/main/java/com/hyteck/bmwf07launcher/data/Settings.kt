@@ -127,6 +127,15 @@ class Settings(context: Context) {
         get() = prefs.getString(KEY_INTRO_URI, null)
         set(value) = putString(KEY_INTRO_URI, value)
 
+    /**
+     * MIME type of the intro media picked in the settings (v3.2: a picture is allowed as well as
+     * a video). Null for an installation that picked a video before the type was stored; the
+     * launcher then falls back to the file's extension.
+     */
+    var introMediaType: String?
+        get() = prefs.getString(KEY_INTRO_MEDIA_TYPE, null)
+        set(value) = putString(KEY_INTRO_MEDIA_TYPE, value)
+
     var lastPreset: Int
         get() = prefs.getInt(KEY_LAST_PRESET, -1)
         set(value) = write { it.putInt(KEY_LAST_PRESET, value) }
@@ -267,6 +276,7 @@ class Settings(context: Context) {
         private const val KEY_INTRO = "intro_enabled"
         private const val KEY_INTRO_SKIP_RETURN = "intro_skip_return"
         private const val KEY_INTRO_URI = "intro_uri"
+        private const val KEY_INTRO_MEDIA_TYPE = "intro_media_type"
         private const val KEY_LAST_PRESET = "last_preset"
         private const val KEY_HIDDEN = "hidden_packages"
         private const val KEY_FAVORITES = "favorite_packages"

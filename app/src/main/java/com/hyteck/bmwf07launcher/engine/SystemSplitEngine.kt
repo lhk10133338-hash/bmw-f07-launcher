@@ -37,6 +37,13 @@ import com.hyteck.bmwf07launcher.service.LauncherAccessibilityService
  * dock and the left pane, and a window's own border/shadow reached past that onto the dock,
  * where it swallowed the first tap on the dock buttons. [setDockKeepOut] carries the dock's edge
  * here, and every rectangle is clamped against it before a launch and before a re-place.
+ *
+ * ## 3.2
+ *
+ * `FLAG_ACTIVITY_MULTIPLE_TASK` is gone. A placement is a plain `NEW_TASK` (plus
+ * `REORDER_TO_FRONT` when an existing task is only raised), so an app that runs a single task —
+ * 네이버지도, QQ음악HD — is no longer asked to open a second task of its own activity for the
+ * other pane.
  */
 class SystemSplitEngine(
     private val context: Context,
@@ -166,15 +173,15 @@ class SystemSplitEngine(
             onMessage("앱을 찾을 수 없습니다: $packageName")
             return
         }
+        // v3.2: a fresh placement asks for NEW_TASK only. MULTIPLE_TASK used to be added so one
+        // app could sit in both slots, but a second task of the same activity is what makes
+        // single-task apps (네이버지도, QQ음악HD) answer with a second window, a stale window or
+        // no window at all: those apps keep one instance and their own task. They are now followed
+        // and raised instead, at the cost that the same app in both panes shares its one task.
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
         if (reorder) {
             // Raise the task that is already running; it is not recreated.
             intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
-        } else {
-            // A separate task per pane, so the same app can sit in both slots.
-            intent.addFlags(
-                Intent.FLAG_ACTIVITY_MULTIPLE_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
-            )
         }
 
         val options = ActivityOptions.makeBasic()

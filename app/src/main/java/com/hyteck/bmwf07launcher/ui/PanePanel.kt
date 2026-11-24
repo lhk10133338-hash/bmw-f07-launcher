@@ -50,6 +50,7 @@ class PanePanel(
     fun showMenu(
         title: String,
         subtitle: String,
+        hasApp: Boolean,
         dpi: Int?,
         isFullscreen: Boolean,
         onPickApp: () -> Unit,
@@ -62,14 +63,21 @@ class PanePanel(
         root.addView(header(title, subtitle, narrow))
         root.addView(spacer(activity.dp(8)))
 
+        // Labels follow the words the user uses for these panes: pick/change the app, take it out,
+        // go full screen. An empty pane offers no "앱 빼기" because there is nothing to take out.
         val entries = ArrayList<Pair<String, () -> Unit>>()
-        entries.add(activity.getString(R.string.pane_change_app) to onPickApp)
+        entries.add(
+            activity.getString(if (hasApp) R.string.pane_change_app else R.string.pane_pick_app)
+                to onPickApp
+        )
         entries.add(
             activity.getString(
                 if (isFullscreen) R.string.pane_restore else R.string.pane_fullscreen
             ) to onFullscreen
         )
-        entries.add(activity.getString(R.string.pane_clear) to onClear)
+        if (hasApp) {
+            entries.add(activity.getString(R.string.pane_clear) to onClear)
+        }
         if (onScale != null) {
             entries.add(activity.getString(R.string.pane_scale) to onScale)
         }
