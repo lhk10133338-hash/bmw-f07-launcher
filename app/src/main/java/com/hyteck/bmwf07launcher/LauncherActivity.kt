@@ -144,6 +144,7 @@ class LauncherActivity : ScaledActivity() {
         settings = Settings(this)
         repo = AppRepository(this)
         apps = repo.apps
+        migrateEngine()
         leftPanel = PanePanel(this, binding.leftOverlay)
         rightPanel = PanePanel(this, binding.rightOverlay)
         appliedUiScale = settings.uiScale
@@ -188,6 +189,19 @@ class LauncherActivity : ScaledActivity() {
     }
 
     // ------------------------------------------------------------------ dock
+
+    /**
+     * One-time move back to the free-form engine for installations that v2.1 had switched to the
+     * virtual display engine: those panes cannot receive touch, and v3.0 ships without Shizuku or
+     * any other privileged helper.
+     */
+    private fun migrateEngine() {
+        if (settings.engineMigratedV3) return
+        if (settings.engine != Settings.ENGINE_SYSTEM) {
+            settings.engine = Settings.ENGINE_SYSTEM
+        }
+        settings.engineMigratedV3 = true
+    }
 
     private fun setupDock() {
         binding.dockDrawer.setOnClickListener { openDrawer() }
@@ -521,9 +535,18 @@ class LauncherActivity : ScaledActivity() {
         scheduleBounds(commit = true)
     }
 
+    /**
+     * Hands the pane rectangles to the engine.
+     *
+     * While the divider is being dragged only an engine that draws the apps *inside* the launcher
+     * (virtual display) is told about it. A free-form engine is only asked once, when the gesture
+     * ends, so dragging can never restart another app.
+     */
     private fun scheduleBounds(commit: Boolean) {
         handler.removeCallbacks(boundsRunnable)
-        handler.postDelayed(boundsRunnable, if (commit) 0L else 80L)
+        if (commit || engine?.inline == true) {
+            handler.postDelayed(boundsRunnable, if (commit) 0L else 80L)
+        }
         if (commit) {
             handler.removeCallbacks(commitRunnable)
             handler.postDelayed(commitRunnable, if (engine?.inline == true) 240L else 320L)
@@ -606,13 +629,17 @@ class LauncherActivity : ScaledActivity() {
                 applySide(side, null)
                 toast(getString(R.string.pane_cleared))
             },
-            onScale = {
-                panelOf(side).showScale(
-                    title = paneTitle(side),
-                    subtitle = subtitle,
-                    initialDpi = dpiOf(side),
-                    requiresVirtual = !virtual
-                ) { dpi -> applyDpi(side, dpi) }
+            onScale = if (virtual) {
+                {
+                    panelOf(side).showScale(
+                        title = paneTitle(side),
+                        subtitle = subtitle,
+                        initialDpi = dpiOf(side),
+                        requiresVirtual = false
+                    ) { dpi -> applyDpi(side, dpi) }
+                }
+            } else {
+                null
             }
         )
     }
@@ -692,28 +719,14 @@ class LauncherActivity : ScaledActivity() {
         val value = dpi.coerceIn(Settings.MIN_DPI, Settings.MAX_DPI)
         if (side == Side.LEFT) settings.leftDpi = value else settings.rightDpi = value
         val current = engine
-        if (current != null && current.supportsDpi) {
-            current.setDensity(side, value)
-            if (side == Side.LEFT) appliedLeftDpi = value else appliedRightDpi = value
-        } else if (settings.engine != Settings.ENGINE_VIRTUAL) {
-            // A free-form window keeps the screen's own density; the virtual display engine is
-            // the one that can give each pane its own scale.
-            switchToVirtualEngine()
+        if (current == null || !current.supportsDpi) {
+            // A free-form window draws with the display's own density.
+            toast(getString(R.string.pane_scale_system))
+            return
         }
+        current.setDensity(side, value)
+        if (side == Side.LEFT) appliedLeftDpi = value else appliedRightDpi = value
         scheduleBounds(commit = true)
-    }
-
-    /** Moves the running session to the virtual display engine and puts both apps back. */
-    private fun switchToVirtualEngine() {
-        settings.engine = Settings.ENGINE_VIRTUAL
-        closePanePanels()
-        setupEngine()
-        updateEmptyStates()
-        val left = leftPkg
-        val right = rightPkg
-        if (left != null) launchApp(Side.LEFT, left)
-        if (right != null) handler.postDelayed({ launchApp(Side.RIGHT, right) }, 320L)
-        toast(getString(R.string.engine_switched_virtual))
     }
 
     private fun swapPanes() {
@@ -729,7 +742,7 @@ class LauncherActivity : ScaledActivity() {
         leftPkg?.let { launchApp(Side.LEFT, it) }
         val right = rightPkg
         if (right != null) {
-            handler.postDelayed({ launchApp(Side.RIGHT, right) }, 220L)
+            handler.postDelayed({ launchApp(Side.RIGHT, right) }, PANE_GAP_MS)
         }
         scheduleBounds(commit = true)
     }
@@ -844,7 +857,7 @@ class LauncherActivity : ScaledActivity() {
                 if (engine?.inline == true) {
                     launchApp(Side.RIGHT, right)
                 } else {
-                    handler.postDelayed({ launchApp(Side.RIGHT, right) }, 320L)
+                    handler.postDelayed({ launchApp(Side.RIGHT, right) }, PANE_GAP_MS)
                 }
             }
         }, SESSION_START_DELAY_MS)
@@ -897,7 +910,7 @@ class LauncherActivity : ScaledActivity() {
             setupEngine()
             updateEmptyStates()
             left?.let { launchApp(Side.LEFT, it) }
-            if (right != null) handler.postDelayed({ launchApp(Side.RIGHT, right) }, 320L)
+            if (right != null) handler.postDelayed({ launchApp(Side.RIGHT, right) }, PANE_GAP_MS)
         } else {
             val current = engine
             if (current != null && current.supportsDpi) {
@@ -1020,5 +1033,8 @@ class LauncherActivity : ScaledActivity() {
         private const val RESTORE_DELAY_MS = 280L
         private const val AUTO_PLAY_DELAY_MS = 1500L
         private const val SESSION_START_DELAY_MS = 140L
+
+        /** Gap between starting the two panes: one launch each, never in the same frame. */
+        private const val PANE_GAP_MS = 350L
     }
 }

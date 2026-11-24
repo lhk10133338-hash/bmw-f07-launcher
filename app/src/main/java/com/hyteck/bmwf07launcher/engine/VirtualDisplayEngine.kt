@@ -27,11 +27,9 @@ import com.hyteck.bmwf07launcher.data.Settings
  *     display is resized with [VirtualDisplay.resize] — never released on a ratio change.
  *  2. [VirtualDisplay.setSurface] attaches the new surface after a pause/return instead of
  *     releasing the display, so the apps on it survive a trip to another app and back.
- *  3. After a resize the running package is brought to the front again with
- *     `FLAG_ACTIVITY_REORDER_TO_FRONT` on the same display id, so an app that ignores the
- *     display configuration change still re-lays itself out into the new window.
- *  4. A slow watchdog re-checks the actual view size every few seconds; a missed callback heals
- *     itself instead of leaving a permanently shrunk pane.
+ *  3. A resize only changes the display and the surface buffer. The app on that display receives
+ *     an ordinary configuration change — it is never started again (that repetition is what
+ *     turned a divider drag into an ANR in v2.1).
  */
 class VirtualDisplayEngine(
     private val context: Context,
@@ -53,7 +51,6 @@ class VirtualDisplayEngine(
     private val sizes = HashMap<Side, IntArray>()
     private val packages = HashMap<Side, String>()
     private val densities = HashMap<Side, Int>()
-    private val reflowPending = HashMap<Side, Boolean>()
 
     /** Per side, so resizing the left display never swallows the right one's callback. */
     private val syncing = HashSet<Side>()
@@ -71,32 +68,11 @@ class VirtualDisplayEngine(
         syncSide(Side.RIGHT)
     }
 
-    private val reflowRunnable = Runnable {
-        for (side in Side.values()) {
-            if (reflowPending[side] != true) continue
-            reflowPending[side] = false
-            val display = displays[side] ?: continue
-            val pkg = packages[side] ?: continue
-            if (!display.surface.let { it != null && it.isValid }) continue
-            launchOnDisplay(pkg, display.display.displayId, reorder = true)
-        }
-    }
-
-    private val watchdog = object : Runnable {
-        override fun run() {
-            if (released) return
-            syncSide(Side.LEFT)
-            syncSide(Side.RIGHT)
-            handler.postDelayed(this, WATCHDOG_MS)
-        }
-    }
-
     init {
         densities[Side.LEFT] = settings.leftDpi
         densities[Side.RIGHT] = settings.rightDpi
         register(Side.LEFT, leftSurface)
         register(Side.RIGHT, rightSurface)
-        handler.postDelayed(watchdog, WATCHDOG_MS)
     }
 
     private fun register(side: Side, view: SurfaceView) {
@@ -136,9 +112,8 @@ class VirtualDisplayEngine(
             if (display.surface !== surface) display.surface = surface
         }
         sizes.remove(side)
-        // The surface came back after a pause: bring the app on this display to the front again
-        // (and restart it if the system killed it while the launcher was away).
-        if (packages[side] != null) scheduleReflow(side)
+        // The app itself is untouched: it has been running on this display all along and simply
+        // gets its picture back.
     }
 
     private fun viewOf(side: Side): SurfaceView =
@@ -155,8 +130,8 @@ class VirtualDisplayEngine(
 
     override fun applyBounds(left: Rect, right: Rect, commit: Boolean) {
         // The SurfaceViews already have the exact pane size; re-read it and resize the displays.
-        // Both panes are handled in the same pass, and one more pass follows shortly after so a
-        // resize that landed between two layout frames is not left behind.
+        // One extra pass follows a commit so a resize that landed between two layout frames is
+        // not left behind. Neither pass starts an app.
         scheduleSync()
         if (commit) {
             handler.removeCallbacks(followUpSync)
@@ -178,7 +153,6 @@ class VirtualDisplayEngine(
                 runCatching { display.surface = surface }
                 sizes.remove(side)
             }
-            scheduleReflow(side)
         }
         scheduleSync()
         handler.removeCallbacks(followUpSync)
@@ -229,10 +203,8 @@ class VirtualDisplayEngine(
                 if (existing.surface !== surface) {
                     runCatching { existing.surface = surface }
                 }
-                val sizeChanged = record == null || record[0] != width || record[1] != height
                 existing.resize(width, height, density)
                 sizes[side] = intArrayOf(width, height, density)
-                if (sizeChanged) scheduleReflow(side)
             } else {
                 val display = createDisplay(side, width, height, density, surface)
                 if (display == null) {
@@ -258,12 +230,6 @@ class VirtualDisplayEngine(
         } finally {
             syncing.remove(side)
         }
-    }
-
-    private fun scheduleReflow(side: Side) {
-        reflowPending[side] = true
-        handler.removeCallbacks(reflowRunnable)
-        handler.postDelayed(reflowRunnable, REFLOW_DELAY_MS)
     }
 
     private fun reportUnavailable() {
@@ -362,21 +328,16 @@ class VirtualDisplayEngine(
         released = true
         handler.removeCallbacks(syncRunnable)
         handler.removeCallbacks(followUpSync)
-        handler.removeCallbacks(reflowRunnable)
-        handler.removeCallbacks(watchdog)
         for (display in displays.values) {
             display.release()
         }
         displays.clear()
         sizes.clear()
         packages.clear()
-        reflowPending.clear()
     }
 
     companion object {
-        private const val WATCHDOG_MS = 4000L
         private const val SYNC_DELAY_MS = 64L
-        private const val REFLOW_DELAY_MS = 260L
         private const val FOLLOW_UP_MS = 220L
 
         // DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC / _SUPPORTS_TOUCH (hidden constants).

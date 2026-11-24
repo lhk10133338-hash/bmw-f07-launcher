@@ -45,6 +45,17 @@ class Settings(context: Context) {
         get() = prefs.getString(KEY_ENGINE, ENGINE_SYSTEM) ?: ENGINE_SYSTEM
         set(value) = putString(KEY_ENGINE, value)
 
+    /**
+     * v3.0 keeps the version of the engine settings that was in use before.
+     *
+     * An installation that had switched itself to the virtual display engine is moved back to the
+     * free-form engine: apps drawn on a virtual display cannot receive touch in this launcher, and
+     * v3.0 is about stability with ordinary app permissions only.
+     */
+    var engineMigratedV3: Boolean
+        get() = prefs.getBoolean(KEY_ENGINE_MIGRATED_V3, false)
+        set(value) = write { it.putBoolean(KEY_ENGINE_MIGRATED_V3, value) }
+
     /** Left pane width percentage, 20..80. */
     var ratio: Int
         get() = prefs.getInt(KEY_RATIO, 50).coerceIn(20, 80)
@@ -243,6 +254,7 @@ class Settings(context: Context) {
 
         private const val PREFS_NAME = "bmw_launcher_settings"
         private const val KEY_ENGINE = "engine"
+        private const val KEY_ENGINE_MIGRATED_V3 = "engine_migrated_v3"
         private const val KEY_RATIO = "ratio"
         private const val KEY_LEFT_DPI = "left_dpi"
         private const val KEY_RIGHT_DPI = "right_dpi"

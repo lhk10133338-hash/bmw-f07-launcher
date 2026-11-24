@@ -63,10 +63,10 @@
     <!-- settings sections -->
     <string name="section_start">시작 및 복원</string>
     <string name="section_engine">분할 실행 방식</string>
-    <string name="engine_virtual">가상 디스플레이 · 창별 배율(DPI) 조절</string>
-    <string name="engine_system">시스템 자유창 · 호환용 (기기 기본 DPI)</string>
-    <string name="engine_virtual_desc">런처 안에 두 앱을 직접 렌더링합니다. 왼쪽·오른쪽 창마다 앱 UI 배율(120~360 dpi)을 따로 맞출 수 있어 2:8 창에서도 글자가 넘치지 않습니다. 펌웨어가 가상 화면 실행을 허용해야 합니다.</string>
-    <string name="engine_system_desc">안드로이드 자유 형식 창으로 앱을 지정한 위치에 띄웁니다. 앱이 자기 창을 직접 그리므로 창별 배율은 바꿀 수 없고 기기 기본 DPI를 씁니다. 자유 형식 창이 켜져 있어야 비율이 적용됩니다.</string>
+    <string name="engine_virtual">가상 디스플레이 (실험적 · 창별 배율)</string>
+    <string name="engine_system">자유창 안전 모드 · 앱 재실행 없음 (권장)</string>
+    <string name="engine_virtual_desc">런처 안에 두 앱을 직접 그립니다. 창마다 배율(120~360 dpi)을 맞출 수 있지만, 가상 화면에 그린 앱은 터치가 런처로 전달되지 않아 이 기기에서는 실험용입니다. 펌웨어가 가상 화면 실행을 허용해야 합니다.</string>
+    <string name="engine_system_desc">앱을 지정한 위치에 자유 형식 창으로 띄웁니다. 앱을 고를 때·프리셋을 누를 때만 한 번 실행하고, 비율은 손을 뗀 순간 한 번만 적용합니다. 드래그 중에는 다른 앱의 창을 건드리지 않아 앱이 멈추거나 꺼지지 않습니다. (창별 배율은 기기 기본값)</string>
     <string name="section_ratio">기본 분할 비율</string>
     <string name="section_dpi">창별 앱 화면 배율 · 120~360 dpi (가상 디스플레이)</string>
     <string name="section_launcher_scale">런처 화면 크기</string>

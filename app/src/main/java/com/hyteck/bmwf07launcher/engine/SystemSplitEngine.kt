@@ -7,27 +7,29 @@ import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import com.hyteck.bmwf07launcher.service.LauncherAccessibilityService
 
 /**
- * Launches each app as its own task with explicit bounds, using the system free-form /
- * multi-window implementation.
+ * Places each app as its own free-form task in one of the two panes.
  *
- * A normal app cannot move another app's window, so a ratio change is applied by starting
- * that app again with `FLAG_ACTIVITY_REORDER_TO_FRONT` and the new launch bounds: the task is
- * brought back to the front (without recreating the activity when the app supports it) and the
- * window manager lays it out in the new rectangle.
+ * ## What changed in 3.0, and why
  *
- * Three reports shaped this class (2026-11-24):
- *  - "the divider drag resizes only one app": two bound launches issued in the same call
- *    collapse into a single transition and only the last window keeps its new rectangle. Both
- *    panes are now moved one after another ([STEP_MS] apart) and the pass is repeated once, so
- *    a dropped launch still ends up in its own half.
- *  - "apps vanish after opening the settings or the app drawer": the opaque launcher window
- *    comes back in front of the floating app windows, so [resume] puts both windows back into
- *    their panes when the launcher returns.
- *  - "one app covers the other": each launch is staggered and re-applied, so the windows never
- *    end up sharing the same rectangle.
+ * v2.1 resized the panes by starting the app again on every divider change, with a "repair" pass
+ * that launched each window a second time and a repeat on every resume. 네이버지도 and QQ음악HD
+ * answered that with `응답하지 않음` and were killed (user report, 2026-11-24). A normal app cannot
+ * resize another app's task — `resizeTask` needs the shell/root identity — so this engine does the
+ * only thing that is allowed and safe:
+ *
+ *  1. **One launch per app selection.** Picking an app (or a preset) starts it exactly once with
+ *     `setLaunchBounds(rect)`. The two panes are started 350 ms apart.
+ *  2. **One placement per gesture, at most.** Changing the ratio re-places each window once
+ *     (350 ms apart) when the divider is released or a ratio preset is tapped. Dragging never
+ *     touches another app's window, and nothing is repeated or "repaired".
+ *  3. **One raise on return.** Coming back from the settings screen or the app drawer raises the
+ *     two running tasks again (no bounds, no restart), so they are not left behind the launcher.
+ *  4. If the firmware refuses free-form bounds, the apps simply open where the system puts them:
+ *     the launcher reports it once and never retries, so no app is ever restarted in a loop.
  */
 class SystemSplitEngine(
     private val context: Context,
@@ -38,149 +40,106 @@ class SystemSplitEngine(
     override val supportsDpi: Boolean = false
 
     private val handler = Handler(Looper.getMainLooper())
+
     private val packages = HashMap<Side, String>()
     private val bounds = HashMap<Side, Rect>()
+
+    /** Rectangle each window was last placed at, so an unchanged gesture costs no launch. */
     private val applied = HashMap<Side, Rect>()
+
     private val queue = ArrayList<Runnable>()
 
-    private var generation = 0
-
-    /** Rectangle pair that has been moved (and settled) already. */
-    private var appliedKey: String? = null
-
-    /** Rectangle pair whose move sequence is running right now. */
-    private var movingKey: String? = null
-
     private var released = false
+    private var lastLaunchAt = 0L
     private var launchFailureReported = false
     private var accessibilityHintShown = false
 
+    // ---------------------------------------------------------------- launching
+
     override fun launch(side: Side, packageName: String) {
+        if (released) return
         packages[side] = packageName
         applied.remove(side)
-        val rect = bounds[side]
-        if (rect == null || rect.width() <= 0 || rect.height() <= 0) {
-            // No rectangle known yet: the next applyBounds() must place this window.
-            appliedKey = null
-        }
-        start(side, packageName, rect ?: Rect(), reorder = false)
+        lastLaunchAt = SystemClock.uptimeMillis()
+        place(side, packageName, bounds[side], reorder = false)
 
-        // Keep the other pane's window in its own rectangle, so a freshly opened app never
-        // ends up covering it.
+        // The new window came to the front; a single call 350 ms later keeps the other pane in
+        // its own rectangle instead of letting the fresh window cover it.
         val other = if (side == Side.LEFT) Side.RIGHT else Side.LEFT
-        if (packages[other] != null && applied[other] != bounds[other]) {
-            val gen = ++generation
-            schedule(gen, STEP_MS) { move(other, force = true) }
+        val otherPkg = packages[other] ?: return
+        val otherRect = bounds[other] ?: return
+        post(STEP_MS) {
+            if (packages[other] == otherPkg) place(other, otherPkg, otherRect, reorder = true)
         }
     }
 
     override fun applyBounds(left: Rect, right: Rect, commit: Boolean) {
+        if (released) return
         bounds[Side.LEFT] = Rect(left)
         bounds[Side.RIGHT] = Rect(right)
-        if (!commit || released) return
-        val key = keyOf()
-        // Layout callbacks and onResume report the same rectangles again; moving the windows
-        // once per change is enough (repeating it would restart them on every frame).
-        if (key == movingKey || key == appliedKey) return
-        moveAll(listOf(Side.LEFT, Side.RIGHT), key, repair = true)
+        // While the divider is being dragged nothing outside this app is touched at all.
+        if (!commit) return
+
+        var delay = 0L
+        for (side in listOf(Side.LEFT, Side.RIGHT)) {
+            val pkg = packages[side] ?: continue
+            val rect = bounds[side] ?: continue
+            if (rect.width() <= 32 || rect.height() <= 32) continue
+            if (sameRect(applied[side], rect)) continue
+            post(delay) {
+                if (packages[side] == pkg) place(side, pkg, rect, reorder = true)
+            }
+            delay += STEP_MS
+        }
     }
 
+    /**
+     * Brings the two running apps back in front after the launcher was covered by the settings
+     * screen or the app drawer. Their size is left alone: this only raises the existing task.
+     */
     override fun resume(sides: Set<Side>) {
         if (released || sides.isEmpty()) return
-        val targets = sides.filter { packages[it] != null }
-        if (targets.isEmpty()) return
-        for (side in targets) applied.remove(side)
-        moveAll(targets, key = null, repair = false)
+        // A launch that just happened already put the window in front.
+        if (SystemClock.uptimeMillis() - lastLaunchAt < LAUNCH_GRACE_MS) return
+
+        var delay = 0L
+        for (side in listOf(Side.LEFT, Side.RIGHT)) {
+            if (!sides.contains(side)) continue
+            val pkg = packages[side] ?: continue
+            post(delay) {
+                if (packages[side] == pkg) {
+                    place(side, pkg, null, reorder = true)
+                }
+            }
+            delay += STEP_MS
+        }
     }
 
     override fun clear(side: Side) {
         packages.remove(side)
         applied.remove(side)
-        appliedKey = null
     }
 
     override fun setDensity(side: Side, dpi: Int) {
-        // System windows use the density of the display they run on.
+        // A free-form window draws with the density of the display it runs on.
     }
 
     override fun release() {
         released = true
-        cancelQueue()
+        for (runnable in queue) handler.removeCallbacks(runnable)
+        queue.clear()
         packages.clear()
         applied.clear()
     }
 
-    // --------------------------------------------------------------- applying
+    // ------------------------------------------------------------------ one call
 
     /**
-     * Moves the given windows into their rectangles, one launch at a time (staggered, so the
-     * window manager handles each one), and — when [repair] is set — repeats the pass once so a
-     * window that ignored the first request is corrected as well.
+     * Starts or raises one app, optionally demanding a rectangle. This is the only place in the
+     * launcher that starts another app's activity, and it is called once per user gesture.
      */
-    private fun moveAll(sides: List<Side>, key: String?, repair: Boolean) {
-        generation++
-        val gen = generation
-        cancelQueue()
-        if (key != null) movingKey = key
-
-        val targets = sides.filter { packages[it] != null && bounds[it] != null }
-        if (targets.isEmpty()) {
-            movingKey = null
-            return
-        }
-
-        val moved = HashSet<Side>()
-        var delay = 0L
-        for (side in targets) {
-            val captured = side
-            schedule(gen, delay) { if (move(captured, force = false)) moved.add(captured) }
-            delay += STEP_MS
-        }
-        if (repair) {
-            // A bound launch that arrives while the previous window is still being laid out is
-            // dropped by the window manager, which is what leaves one app at the old size.
-            for (side in targets) {
-                val captured = side
-                schedule(gen, delay) { if (moved.contains(captured)) move(captured, force = true) }
-                delay += STEP_MS
-            }
-        }
-        schedule(gen, delay) {
-            movingKey = null
-            if (key != null) appliedKey = key
-        }
-    }
-
-    private fun schedule(gen: Int, delay: Long, block: () -> Unit) {
-        val runnable = Runnable {
-            if (!released && gen == generation) block()
-        }
-        queue.add(runnable)
-        handler.postDelayed(runnable, delay)
-    }
-
-    private fun cancelQueue() {
-        for (runnable in queue) handler.removeCallbacks(runnable)
-        queue.clear()
-    }
-
-    /** @return true when a launch was actually issued. */
-    private fun move(side: Side, force: Boolean): Boolean {
-        val pkg = packages[side] ?: return false
-        val rect = bounds[side] ?: return false
-        if (rect.width() <= 8 || rect.height() <= 8) return false
-        if (!force && applied[side] == rect) return false
-        start(side, pkg, rect, reorder = true)
-        return true
-    }
-
-    private fun keyOf(): String {
-        val left = bounds[Side.LEFT]
-        val right = bounds[Side.RIGHT]
-        return "${left?.toShortString()}|${right?.toShortString()}"
-    }
-
-    private fun start(side: Side, packageName: String, rect: Rect, reorder: Boolean) {
+    private fun place(side: Side, packageName: String, rect: Rect?, reorder: Boolean) {
+        if (released) return
         val intent = context.packageManager.getLaunchIntentForPackage(packageName)
         if (intent == null) {
             onMessage("앱을 찾을 수 없습니다: $packageName")
@@ -188,8 +147,7 @@ class SystemSplitEngine(
         }
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
         if (reorder) {
-            // Bring the running window back without recreating it; the window manager then lays
-            // it out into the rectangle we pass.
+            // Raise the task that is already running; it is not recreated.
             intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
         } else {
             // A separate task per pane, so the same app can sit in both slots.
@@ -199,8 +157,9 @@ class SystemSplitEngine(
         }
 
         val options = ActivityOptions.makeBasic()
-        if (rect.width() > 0 && rect.height() > 0) {
+        if (rect != null && rect.width() > 32 && rect.height() > 32) {
             options.setLaunchBounds(rect)
+            applied[side] = Rect(rect)
         }
         applyFreeformMode(options)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -212,12 +171,10 @@ class SystemSplitEngine(
         }
 
         val bundle = options.toBundle()
-        applied[side] = Rect(rect)
         val service = LauncherAccessibilityService.instance
         try {
             if (service != null) {
-                // The accessibility service may start activities while the launcher itself is in
-                // the background, which the second pane's launch needs.
+                // The pane that is opened while the launcher is already behind needs this.
                 service.startActivity(intent, bundle)
             } else {
                 context.startActivity(intent, bundle)
@@ -236,9 +193,8 @@ class SystemSplitEngine(
     }
 
     /**
-     * Asks for a free-form window so the bounds are honoured even when the device is not
-     * already in split-screen. This option is a hidden API on some releases, so failure is
-     * ignored (the bounds are still passed).
+     * Asks for a free-form window so the bounds are honoured even when the device is not already
+     * in split-screen. This option is a hidden API on some releases, so failure is ignored.
      */
     private fun applyFreeformMode(options: ActivityOptions) {
         try {
@@ -252,8 +208,25 @@ class SystemSplitEngine(
         }
     }
 
+    private fun post(delay: Long, block: () -> Unit) {
+        val runnable = Runnable { if (!released) block() }
+        queue.add(runnable)
+        handler.postDelayed(runnable, delay)
+    }
+
+    private fun sameRect(a: Rect?, b: Rect?): Boolean {
+        if (a == null || b == null) return false
+        return kotlin.math.abs(a.left - b.left) <= 2 && kotlin.math.abs(a.top - b.top) <= 2 &&
+            kotlin.math.abs(a.right - b.right) <= 2 && kotlin.math.abs(a.bottom - b.bottom) <= 2
+    }
+
     companion object {
         private const val WINDOWING_MODE_FREEFORM = 5
-        private const val STEP_MS = 240L
+
+        /** Gap between the two panes so the window manager handles each launch separately. */
+        private const val STEP_MS = 350L
+
+        /** A resume right after a launch would only start the same activity twice. */
+        private const val LAUNCH_GRACE_MS = 900L
     }
 }
