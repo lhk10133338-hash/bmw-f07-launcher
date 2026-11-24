@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Rect
 import android.hardware.display.DisplayManager
-import android.hardware.display.VirtualDisplay
 import android.os.Handler
 import android.os.Looper
 import android.view.MotionEvent
@@ -13,6 +12,7 @@ import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import com.hyteck.bmwf07launcher.data.Settings
+import com.hyteck.bmwf07launcher.shizuku.ShizukuBridge
 
 /**
  * Renders both apps inside the launcher window: each pane owns a virtual display that is
@@ -25,12 +25,15 @@ import com.hyteck.bmwf07launcher.data.Settings
  *
  * Now:
  *  1. [SurfaceHolder.setFixedSize] pins the buffer to the exact pane rectangle, then an existing
- *     display is resized with [VirtualDisplay.resize] — never released on a ratio change.
- *  2. [VirtualDisplay.setSurface] attaches the new surface after a pause/return instead of
- *     releasing the display, so the apps on it survive a trip to another app and back.
+ *     display is resized with `VirtualDisplay.resize` — never released on a ratio change.
+ *  2. The new surface is attached after a pause/return instead of releasing the display, so the
+ *     apps on it survive a trip to another app and back.
  *  3. A resize only changes the display and the surface buffer. The app on that display receives
  *     an ordinary configuration change — it is never started again (that repetition is what
  *     turned a divider drag into an ANR in v2.1).
+ *
+ * v3.4 — the display is now made where the platform allows it to host apps (see [DisplayHost]),
+ * and every touch that lands on a pane is forwarded into that pane's display ([touchSink]).
  */
 class VirtualDisplayEngine(
     private val context: Context,
@@ -53,10 +56,17 @@ class VirtualDisplayEngine(
         context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
     private val handler = Handler(Looper.getMainLooper())
 
-    private val displays = HashMap<Side, VirtualDisplay>()
+    /** Who creates the displays: the shell side when Shizuku is bound, else this process. */
+    private val hosts = HashMap<Side, DisplayHost>()
+    private val displayIds = HashMap<Side, Int>()
+    private val surfaces = HashMap<Side, Surface>()
+
     private val sizes = HashMap<Side, IntArray>()
     private val packages = HashMap<Side, String>()
     private val densities = HashMap<Side, Int>()
+
+    /** How often a pane waited for the Shizuku touch service before falling back to itself. */
+    private val waits = HashMap<Side, Int>()
 
     /** Per side, so resizing the left display never swallows the right one's callback. */
     private val syncing = HashSet<Side>()
@@ -87,7 +97,7 @@ class VirtualDisplayEngine(
         view.isClickable = true
         view.setOnClickListener { /* the touch itself is forwarded in the listener below */ }
         view.setOnTouchListener { touched, event ->
-            val displayId = displays[side]?.display?.displayId ?: -1
+            val displayId = displayIds[side] ?: -1
             if (displayId >= 0) touchSink?.invoke(displayId, event)
             if (event.actionMasked == MotionEvent.ACTION_UP) touched.performClick()
             true
@@ -109,9 +119,11 @@ class VirtualDisplayEngine(
             override fun surfaceDestroyed(holder: SurfaceHolder) {
                 handler.removeCallbacks(syncRunnable)
                 // Keep the display and its apps; only detach the dead surface.
-                displays[side]?.let { display ->
-                    runCatching { display.surface = null }
+                val displayId = displayIds[side]
+                if (displayId != null) {
+                    hosts[side]?.setSurface(displayId, null)
                 }
+                surfaces.remove(side)
                 sizes.remove(side)
             }
         })
@@ -123,10 +135,10 @@ class VirtualDisplayEngine(
     }
 
     private fun attachSurface(side: Side, surface: Surface) {
-        val display = displays[side] ?: return
-        runCatching {
-            if (display.surface !== surface) display.surface = surface
-        }
+        val displayId = displayIds[side] ?: return
+        if (surfaces[side] === surface) return
+        hosts[side]?.setSurface(displayId, surface)
+        surfaces[side] = surface
         sizes.remove(side)
         // The app itself is untouched: it has been running on this display all along and simply
         // gets its picture back.
@@ -138,6 +150,31 @@ class VirtualDisplayEngine(
     private fun densityOf(side: Side): Int =
         (densities[side] ?: if (side == Side.LEFT) settings.leftDpi else settings.rightDpi)
             .coerceIn(Settings.MIN_DPI, Settings.MAX_DPI)
+
+    /**
+     * The host for [side], or null while the Shizuku touch service is still starting.
+     *
+     * Waiting matters: a display made here cannot host another app on a stock Android, so a pane
+     * that starts a second too early would be stuck on the wrong (local) display. The wait is
+     * short and bounded; afterwards the local host is used and a refused launch is reported.
+     */
+    private fun hostFor(side: Side): DisplayHost? {
+        hosts[side]?.let { return it }
+        val control = ShizukuBridge.controlOrNull()
+        if (control != null) {
+            val host = ShizukuDisplayHost(control)
+            hosts[side] = host
+            return host
+        }
+        if (ShizukuBridge.awaitingTouchService()) {
+            val tries = (waits[side] ?: 0) + 1
+            waits[side] = tries
+            if (tries < MAX_WAIT_TRIES) return null
+        }
+        val host = LocalDisplayHost(displayManager)
+        hosts[side] = host
+        return host
+    }
 
     private fun scheduleSync() {
         handler.removeCallbacks(syncRunnable)
@@ -164,11 +201,7 @@ class VirtualDisplayEngine(
         for (side in sides) {
             if (packages[side] == null) continue
             val surface = viewOf(side).holder.surface
-            val display = displays[side]
-            if (display != null && surface != null && surface.isValid && display.surface !== surface) {
-                runCatching { display.surface = surface }
-                sizes.remove(side)
-            }
+            if (surface != null && surface.isValid) attachSurface(side, surface)
         }
         scheduleSync()
         handler.removeCallbacks(followUpSync)
@@ -194,55 +227,58 @@ class VirtualDisplayEngine(
             scheduleSync()
             return
         }
-        val holder = viewOf(side).holder
-        val surface = holder.surface
-        if (surface == null || !surface.isValid) {
-            syncing.remove(side)
-            return
-        }
-
-        val density = densityOf(side)
-        val existing = displays[side]
-        val record = sizes[side]
-        if (existing != null && record != null &&
-            record[0] == width && record[1] == height && record[2] == density &&
-            existing.surface === surface
-        ) {
-            syncing.remove(side)
-            return
-        }
-
         try {
+            val holder = viewOf(side).holder
+            val surface = holder.surface
+            if (surface == null || !surface.isValid) return
+
+            val host = hostFor(side) ?: run {
+                // Still waiting for the Shizuku touch service.
+                scheduleSync()
+                return
+            }
+            waits.remove(side)
+
+            val density = densityOf(side)
+            val existing = displayIds[side]
+            val record = sizes[side]
+            if (existing != null && record != null &&
+                record[0] == width && record[1] == height && record[2] == density &&
+                surfaces[side] === surface
+            ) {
+                return
+            }
+
             // 1) surface buffer = pane rectangle, 2) display = same rectangle.
             runCatching { holder.setFixedSize(width, height) }
+
             if (existing != null) {
-                if (existing.surface !== surface) {
-                    runCatching { existing.surface = surface }
+                if (surfaces[side] !== surface) {
+                    host.setSurface(existing, surface)
+                    surfaces[side] = surface
                 }
-                existing.resize(width, height, density)
-                sizes[side] = intArrayOf(width, height, density)
-            } else {
-                val display = createDisplay(side, width, height, density, surface)
-                if (display == null) {
-                    reportUnavailable()
+                if (!host.resize(existing, width, height, density)) {
+                    // A display that refuses resize() is rebuilt once at the new size.
+                    host.release(existing)
+                    displayIds.remove(side)
+                    sizes.remove(side)
+                    surfaces.remove(side)
+                    scheduleSync()
                     return
                 }
-                displays[side] = display
                 sizes[side] = intArrayOf(width, height, density)
-                packages[side]?.let { launchOnDisplay(it, display.display.displayId, reorder = true) }
+                return
             }
-        } catch (e: Exception) {
-            // A display that refuses resize() is recreated once at the new size.
-            displays.remove(side)?.release()
-            sizes.remove(side)
-            val display = createDisplay(side, width, height, density, surface)
-            if (display == null) {
+
+            val created = host.create(displayName(side), width, height, density, surface)
+            if (created < 0) {
                 reportUnavailable()
                 return
             }
-            displays[side] = display
+            displayIds[side] = created
+            surfaces[side] = surface
             sizes[side] = intArrayOf(width, height, density)
-            packages[side]?.let { launchOnDisplay(it, display.display.displayId, reorder = false) }
+            packages[side]?.let { launchOnDisplay(it, created, reorder = true) }
         } finally {
             syncing.remove(side)
         }
@@ -251,54 +287,22 @@ class VirtualDisplayEngine(
     private fun reportUnavailable() {
         if (unavailableReported) return
         unavailableReported = true
-        onUnavailable("이 기기는 가상 화면 실행을 허용하지 않습니다. '시스템 분할' 방식으로 전환합니다.")
+        onUnavailable(
+            "이 기기는 가상 화면에 앱을 띄우는 것을 허용하지 않습니다. '자유창 안전 모드'로 전환합니다."
+        )
     }
 
-    private fun createDisplay(
-        side: Side,
-        width: Int,
-        height: Int,
-        density: Int,
-        surface: Surface
-    ): VirtualDisplay? {
-        val name = "bmw-f07-" + (if (side == Side.LEFT) "left" else "right")
-        // v3.4: a trusted display may host another app's activity; PUBLIC is what lets the window
-        // manager place an ordinary task on it at all; SUPPORTS_TOUCH is required for injected or
-        // dispatched touches. Not every firmware grants TRUSTED to an ordinary app, so each
-        // weaker set is tried in turn and a refusal just moves on.
-        val flagSets = intArrayOf(
-            FLAG_TRUSTED or FLAG_PUBLIC or FLAG_SUPPORTS_TOUCH,
-            FLAG_TRUSTED or FLAG_PUBLIC or FLAG_SUPPORTS_TOUCH or FLAG_OWN_CONTENT_ONLY,
-            FLAG_PUBLIC or FLAG_SUPPORTS_TOUCH,
-            FLAG_SUPPORTS_TOUCH,
-            0
-        )
-        for (flags in flagSets) {
-            try {
-                val display = displayManager.createVirtualDisplay(
-                    name,
-                    width,
-                    height,
-                    density,
-                    surface,
-                    flags
-                )
-                if (display != null) return display
-            } catch (ignored: Exception) {
-                // Try the next flag set.
-            }
-        }
-        return null
-    }
+    private fun displayName(side: Side): String =
+        "bmw-f07-" + (if (side == Side.LEFT) "left" else "right")
 
     override fun launch(side: Side, packageName: String) {
         packages[side] = packageName
-        val display = displays[side]
-        if (display == null) {
+        val displayId = displayIds[side]
+        if (displayId == null) {
             scheduleSync()
             return
         }
-        launchOnDisplay(packageName, display.display.displayId, reorder = false)
+        launchOnDisplay(packageName, displayId, reorder = false)
     }
 
     override fun clear(side: Side) {
@@ -350,23 +354,23 @@ class VirtualDisplayEngine(
         released = true
         handler.removeCallbacks(syncRunnable)
         handler.removeCallbacks(followUpSync)
-        for (display in displays.values) {
-            display.release()
+        for (side in listOf(Side.LEFT, Side.RIGHT)) {
+            val displayId = displayIds[side]
+            if (displayId != null) hosts[side]?.release(displayId)
         }
-        displays.clear()
+        displayIds.clear()
+        surfaces.clear()
+        hosts.clear()
         sizes.clear()
         packages.clear()
+        waits.clear()
     }
 
     companion object {
         private const val SYNC_DELAY_MS = 64L
         private const val FOLLOW_UP_MS = 220L
 
-        // DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC / _SUPPORTS_TOUCH / _OWN_CONTENT_ONLY /
-        // _TRUSTED (hidden constants).
-        private const val FLAG_PUBLIC = 1
-        private const val FLAG_SUPPORTS_TOUCH = 1 shl 6
-        private const val FLAG_OWN_CONTENT_ONLY = 1 shl 3
-        private const val FLAG_TRUSTED = 1 shl 10
+        /** ~2.6 s of waiting for the Shizuku touch service before the local host is used. */
+        private const val MAX_WAIT_TRIES = 40
     }
 }

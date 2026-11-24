@@ -120,6 +120,15 @@ object ShizukuBridge {
     /** True when a touch can be injected right now. */
     fun isReady(): Boolean = control != null && isRunning()
 
+    /** The bound shell-side service, or null. The virtual-display engine builds displays with it. */
+    fun controlOrNull(): IShizukuControl? = control
+
+    /**
+     * Shizuku is running and allowed, but the user service has not finished binding yet. The
+     * engine waits a moment for it instead of building displays it cannot host apps on.
+     */
+    fun awaitingTouchService(): Boolean = control == null && isRunning() && isGranted()
+
     fun isRunning(): Boolean = try {
         Shizuku.pingBinder()
     } catch (e: Throwable) {

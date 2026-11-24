@@ -73,12 +73,21 @@ class LauncherActivity : ScaledActivity() {
     /** v3.4: puts the touches that land on a pane into that pane's virtual display. */
     private val touchRouter by lazy { VirtualTouchRouter() }
 
-    /** The "Shizuku or 접근성 서비스가 필요합니다" hint is shown once per launch. */
+    /** The "Shizuku 또는 접근성 서비스가 필요합니다" hint is shown once per launch. */
     private var engineHintShown = false
 
+    /**
+     * Set when the firmware refused a virtual display this run. The user's stored choice is kept
+     * (a Shizuku permission can still be granted later); only this run falls back.
+     */
+    private var virtualRefused = false
+
     /** Fired when Shizuku's binder or the touch service appears: the engine may now be switched. */
-    private val shizukuStateListener: (ShizukuBridge.State) -> Unit = {
-        handler.post { syncEngineWithShizuku() }
+    private val shizukuStateListener: (ShizukuBridge.State) -> Unit = { state ->
+        handler.post {
+            if (state == ShizukuBridge.State.READY) virtualRefused = false
+            syncEngineWithShizuku()
+        }
     }
 
     /** Last rectangles handed to the engine, so identical layout passes are not repeated. */
@@ -867,6 +876,7 @@ class LauncherActivity : ScaledActivity() {
      */
     private fun effectiveEngine(): String {
         if (settings.engine != Settings.ENGINE_VIRTUAL) return Settings.ENGINE_SYSTEM
+        if (virtualRefused) return Settings.ENGINE_SYSTEM
         return if (virtualTouchAvailable()) Settings.ENGINE_VIRTUAL else Settings.ENGINE_SYSTEM
     }
 
@@ -913,7 +923,9 @@ class LauncherActivity : ScaledActivity() {
     private fun handleEngineUnavailable(message: String) {
         toast(message)
         if (settings.engine != Settings.ENGINE_VIRTUAL) return
-        settings.engine = Settings.ENGINE_SYSTEM
+        // The stored choice stays: a display that is refused now may be allowed once Shizuku is
+        // set up, so only this run is put on the free-form engine.
+        virtualRefused = true
         val left = leftPkg
         val right = rightPkg
         setupEngine()

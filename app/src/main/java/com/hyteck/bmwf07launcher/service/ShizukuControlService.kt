@@ -1,27 +1,59 @@
 package com.hyteck.bmwf07launcher.service
 
+import android.content.Context
+import android.hardware.display.DisplayManager
+import android.hardware.display.VirtualDisplay
 import android.view.InputEvent
 import android.view.MotionEvent
+import android.view.Surface
 import com.hyteck.bmwf07launcher.IShizukuControl
+import java.util.concurrent.ConcurrentHashMap
 
 /**
- * The shell side of the launcher's touch pipeline (v3.4).
+ * The shell side of the launcher's virtual-display engine (v3.4).
  *
- * Shizuku starts this class in a separate process that runs with the adb shell UID (2000). That
- * UID holds `android.permission.INJECT_EVENTS`, so it is allowed to do what the launcher itself
- * may not: push a touch event into a display that is not the default one. That is the missing
- * piece of the virtual-display engine — both panes are drawn inside the launcher, so the launcher
- * receives the touches, but the apps running on the two virtual displays never saw them.
+ * Shizuku starts this class in a separate process that runs with the adb shell UID (2000), which
+ * in AOSP is signed like the platform and therefore holds two permissions the launcher itself
+ * cannot get:
  *
- * Only two hidden-API reflections are used, and both are resolved lazily so a firmware that lacks
- * one simply disables touch instead of crashing the service:
- *  - `android.hardware.input.InputManager#getInstance()` / `#injectInputEvent(InputEvent, int)`
- *  - `MotionEvent.obtain(..., displayId, flags)`, the 15-argument overload that carries the
- *    target display (the same one scrcpy uses); `setDisplayId(int)` is tried as a fallback.
+ *  - **`ADD_TRUSTED_DISPLAY`** — a virtual display may only host another app's activity when it is
+ *    *trusted*. A display created by an ordinary app makes every `setLaunchDisplayId` fail with
+ *    `SecurityException`, even for the app's own activity (verified against Android 15 behaviour
+ *    of `createVirtualDisplay` + `ActivityOptions`). The display is therefore created here with
+ *    `VIRTUAL_DISPLAY_FLAG_TRUSTED`, falling back to `PUBLIC` and then plain flags.
+ *  - **`INJECT_EVENTS`** — pushes a touch into a display that is not the default one, like
+ *    `adb shell input`.
  *
- * The event is *not* recycled: an asynchronous injection may still be reading it.
+ * Only hidden APIs are used, and every one of them is resolved lazily and defensively: a firmware
+ * that lacks one disables that single feature instead of crashing the service.
  */
 class ShizukuControlService : IShizukuControl.Stub() {
+
+    private val displays = ConcurrentHashMap<Int, VirtualDisplay>()
+
+    /**
+     * A system context of this process. Shizuku's user service process runs on an
+     * `ActivityThread`, so the system context (which owns the display manager) can be borrowed
+     * from it; without it no display can be created and the launcher falls back to its own.
+     */
+    private val systemContext: Context? by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        try {
+            val activityThread = Class.forName("android.app.ActivityThread")
+            val current = activityThread.getMethod("currentActivityThread").invoke(null)
+                ?: return@lazy null
+            activityThread.getMethod("getSystemContext").invoke(current) as? Context
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    private val displayManager: DisplayManager? by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        try {
+            systemContext?.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
+        } catch (t: Throwable) {
+            null
+        }
+    }
 
     private val inputManager: Any? by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         try {
@@ -58,6 +90,73 @@ class ShizukuControlService : IShizukuControl.Stub() {
         }
     }
 
+    // ------------------------------------------------------------- displays
+
+    override fun createDisplay(
+        name: String?,
+        width: Int,
+        height: Int,
+        dpi: Int,
+        surface: Surface?
+    ): Int {
+        val manager = displayManager ?: return -1
+        if (width <= 0 || height <= 0) return -1
+        val safeName = name ?: "bmw-f07"
+        for (flags in FLAG_SETS) {
+            try {
+                val display = manager.createVirtualDisplay(
+                    safeName,
+                    width,
+                    height,
+                    dpi,
+                    surface,
+                    flags
+                )
+                if (display != null) {
+                    val id = display.display.displayId
+                    displays[id] = display
+                    return id
+                }
+            } catch (t: Throwable) {
+                // A refused flag set (typically TRUSTED without ADD_TRUSTED_DISPLAY): next one.
+            }
+        }
+        return -1
+    }
+
+    override fun resizeDisplay(displayId: Int, width: Int, height: Int, dpi: Int): Boolean {
+        val display = displays[displayId] ?: return false
+        if (width <= 0 || height <= 0) return false
+        return try {
+            display.resize(width, height, dpi)
+            true
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
+    override fun setDisplaySurface(displayId: Int, surface: Surface?): Boolean {
+        val display = displays[displayId] ?: return false
+        return try {
+            display.surface = surface
+            true
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
+    override fun releaseDisplay(displayId: Int) {
+        displays.remove(displayId)?.let { display ->
+            try {
+                display.release()
+            } catch (t: Throwable) {
+                // Already gone.
+            }
+        }
+    }
+
+    // --------------------------------------------------------------- touch
+
     override fun isReady(): Boolean = inputManager != null && injectMethod != null
 
     override fun injectTouch(displayId: Int, event: MotionEvent?) {
@@ -75,6 +174,9 @@ class ShizukuControlService : IShizukuControl.Stub() {
     }
 
     override fun destroy() {
+        for (id in displays.keys.toList()) {
+            releaseDisplay(id)
+        }
         System.exit(0)
     }
 
@@ -133,5 +235,22 @@ class ShizukuControlService : IShizukuControl.Stub() {
 
         /** A virtual device id: the event did not come from a real input device. */
         private const val VIRTUAL_DEVICE_ID = 0
+
+        // DisplayManager.VIRTUAL_DISPLAY_FLAG_* (hidden constants).
+        private const val FLAG_PUBLIC = 1
+        private const val FLAG_SUPPORTS_TOUCH = 1 shl 6
+        private const val FLAG_TRUSTED = 1 shl 10
+
+        /**
+         * A trusted display is the only kind that may host another app's activity; the weaker
+         * sets keep the older behaviour working on a firmware that refuses TRUSTED even to the
+         * shell UID.
+         */
+        private val FLAG_SETS = intArrayOf(
+            FLAG_TRUSTED or FLAG_PUBLIC or FLAG_SUPPORTS_TOUCH,
+            FLAG_PUBLIC or FLAG_SUPPORTS_TOUCH,
+            FLAG_SUPPORTS_TOUCH,
+            0
+        )
     }
 }
