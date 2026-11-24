@@ -64,6 +64,7 @@ class LauncherActivity : AppCompatActivity() {
     private val clockFormat = SimpleDateFormat("HH:mm", Locale.KOREA)
     private val dateFormat = SimpleDateFormat("M/d EEE", Locale.KOREA)
     private val presetRows = ArrayList<DockPresetBinding>()
+    private var cachedPresets: List<Preset> = emptyList()
 
     private val clockTick = object : Runnable {
         override fun run() {
@@ -203,6 +204,7 @@ class LauncherActivity : AppCompatActivity() {
         binding.presetList.removeAllViews()
         presetRows.clear()
         val presets = settings.presets()
+        cachedPresets = presets
         if (presets.isEmpty()) {
             val hint = TextView(this).apply {
                 text = getString(R.string.preset_empty_hint)
@@ -240,7 +242,7 @@ class LauncherActivity : AppCompatActivity() {
     }
 
     private fun updatePresetHighlight() {
-        val presets = settings.presets()
+        val presets = cachedPresets
         currentPreset = presets.indexOfFirst {
             it.left == leftPkg && it.right == rightPkg && it.ratio == ratio
         }
@@ -256,7 +258,7 @@ class LauncherActivity : AppCompatActivity() {
             toast(getString(R.string.preset_empty))
             return
         }
-        val presets = settings.presets()
+        val presets = cachedPresets
         val name = "${repo.labelOf(leftPkg)} + ${repo.labelOf(rightPkg)}"
         val added = settings.addPreset(Preset(name, leftPkg, rightPkg, ratio))
         if (!added) {
@@ -274,7 +276,7 @@ class LauncherActivity : AppCompatActivity() {
     }
 
     private fun applyPreset(index: Int) {
-        val preset = settings.presets().getOrNull(index) ?: return
+        val preset = cachedPresets.getOrNull(index) ?: return
         // Ratio first, then the apps (the order CarCar users found reliable).
         setFullscreen(null)
         setRatio(preset.ratio, persist = true, commit = false)
@@ -286,7 +288,7 @@ class LauncherActivity : AppCompatActivity() {
     }
 
     private fun showPresetMenu(index: Int) {
-        val preset = settings.presets().getOrNull(index) ?: return
+        val preset = cachedPresets.getOrNull(index) ?: return
         val items = arrayOf(
             getString(R.string.preset_menu_run),
             getString(R.string.preset_menu_rename),
@@ -334,7 +336,7 @@ class LauncherActivity : AppCompatActivity() {
     }
 
     private fun renamePreset(index: Int) {
-        val preset = settings.presets().getOrNull(index) ?: return
+        val preset = cachedPresets.getOrNull(index) ?: return
         val input = EditText(this).apply {
             setText(preset.name)
             setSelection(text.length)
@@ -407,7 +409,7 @@ class LauncherActivity : AppCompatActivity() {
         ratio = value.coerceIn(20, 80)
         binding.split.ratio = ratio
         if (persist) settings.ratio = ratio
-        updatePresetHighlight()
+        if (commit) updatePresetHighlight()
         scheduleBounds(commit)
     }
 
