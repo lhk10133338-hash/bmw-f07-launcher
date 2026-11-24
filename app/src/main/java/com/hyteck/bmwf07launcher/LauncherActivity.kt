@@ -576,6 +576,13 @@ class LauncherActivity : ScaledActivity() {
             }
         }
         current.setDockKeepOut(minLeft, maxRight)
+        // v3.2: the pane's bottom strip (the launcher's own handle) stays launcher-owned. The
+        // floating window used to be placed on the full pane rectangle and covered the strip, so
+        // as soon as an app was running the strip could not be tapped or long-pressed and the
+        // pane menu was out of reach. The window now ends above the strip.
+        val strip = dp(PANE_STRIP_DP)
+        if (left.bottom - strip > left.top + dp(MIN_PANE_DP)) left.bottom -= strip
+        if (right.bottom - strip > right.top + dp(MIN_PANE_DP)) right.bottom -= strip
         // Layout callbacks, the divider and onResume all report the same rectangles; hand them
         // to the engine once so the windows are not re-placed (and the screen does not jump).
         val key = "$commit|${left.toShortString()}|${right.toShortString()}|$minLeft|$maxRight"
@@ -1152,6 +1159,12 @@ class LauncherActivity : ScaledActivity() {
 
         /** Gap between the dock and a floating window, for its border/shadow (v3.1). */
         private const val DOCK_GAP_DP = 8
+
+        /** Height of the launcher's own handle strip at the bottom of a pane (v3.2). */
+        private const val PANE_STRIP_DP = 20
+
+        /** A window smaller than this is not placed at all. */
+        private const val MIN_PANE_DP = 48
 
         /** Gap between starting the two panes: one launch each, never in the same frame. */
         private const val PANE_GAP_MS = 350L
