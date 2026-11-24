@@ -335,7 +335,7 @@ class PanePanel(
     private fun buttonParams(index: Int): LinearLayout.LayoutParams =
         LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
-            activity.dp(46)
+            activity.dp(48)
         ).apply { topMargin = activity.dp(if (index == 0) 0 else 5) }
 
     private fun spacer(height: Int): View = View(activity).apply {
