@@ -7,32 +7,32 @@
 
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="50dp"
+        android:layout_height="44dp"
         android:background="@drawable/bg_bar"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:paddingLeft="8dp"
+        android:paddingLeft="4dp"
         android:paddingRight="12dp">
 
-        <TextView
+        <ImageView
             android:id="@+id/btnBack"
-            android:layout_width="48dp"
-            android:layout_height="36dp"
-            android:background="@drawable/bg_ratio_btn"
-            android:gravity="center"
-            android:text="‹"
-            android:textColor="@color/text_primary"
-            android:textSize="24sp" />
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="@drawable/bg_dock_button"
+            android:clickable="true"
+            android:contentDescription="@string/close"
+            android:focusable="true"
+            android:padding="10dp"
+            android:src="@drawable/ic_chevron_left" />
 
         <TextView
-            android:id="@+id/titleText"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginStart="14dp"
+            android:layout_marginStart="10dp"
             android:layout_weight="1"
             android:text="@string/settings_title"
             android:textColor="@color/text_primary"
-            android:textSize="17sp"
+            android:textSize="15sp"
             android:textStyle="bold" />
     </LinearLayout>
 
@@ -47,7 +47,81 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:padding="14dp">
+            android:paddingLeft="14dp"
+            android:paddingTop="4dp"
+            android:paddingRight="14dp"
+            android:paddingBottom="24dp">
+
+            <TextView
+                style="@style/SettingsSection"
+                android:text="@string/section_start" />
+
+            <androidx.appcompat.widget.SwitchCompat
+                android:id="@+id/switchRememberSession"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingTop="4dp"
+                android:paddingBottom="4dp"
+                android:text="@string/switch_remember_session"
+                android:textColor="@color/text_primary"
+                android:textSize="13sp" />
+
+            <androidx.appcompat.widget.SwitchCompat
+                android:id="@+id/switchBoot"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingTop="4dp"
+                android:paddingBottom="4dp"
+                android:text="@string/switch_boot"
+                android:textColor="@color/text_primary"
+                android:textSize="13sp" />
+
+            <androidx.appcompat.widget.SwitchCompat
+                android:id="@+id/switchIntro"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingTop="4dp"
+                android:paddingBottom="4dp"
+                android:text="@string/intro_enabled"
+                android:textColor="@color/text_primary"
+                android:textSize="13sp" />
+
+            <androidx.appcompat.widget.SwitchCompat
+                android:id="@+id/switchSkipReturn"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingTop="4dp"
+                android:paddingBottom="4dp"
+                android:text="@string/intro_skip_return"
+                android:textColor="@color/text_primary"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/tvVideoName"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="@string/intro_video_none"
+                android:textColor="@color/text_secondary"
+                android:textSize="11sp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/btnPickVideo"
+                    style="@style/SettingsButton"
+                    android:text="@string/intro_pick_video" />
+
+                <TextView
+                    android:id="@+id/btnResetVideo"
+                    style="@style/SettingsButton"
+                    android:layout_marginStart="8dp"
+                    android:text="@string/intro_reset_video" />
+            </LinearLayout>
 
             <TextView
                 style="@style/SettingsSection"
@@ -63,21 +137,21 @@
                     android:id="@+id/rbSystem"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:paddingTop="4dp"
-                    android:paddingBottom="4dp"
+                    android:paddingTop="2dp"
+                    android:paddingBottom="2dp"
                     android:text="@string/engine_system"
                     android:textColor="@color/text_primary"
-                    android:textSize="14sp" />
+                    android:textSize="13sp" />
 
                 <RadioButton
                     android:id="@+id/rbVirtual"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:paddingTop="4dp"
-                    android:paddingBottom="4dp"
+                    android:paddingTop="2dp"
+                    android:paddingBottom="2dp"
                     android:text="@string/engine_virtual"
                     android:textColor="@color/text_primary"
-                    android:textSize="14sp" />
+                    android:textSize="13sp" />
             </RadioGroup>
 
             <TextView
@@ -87,7 +161,7 @@
                 android:layout_marginTop="4dp"
                 android:text="@string/engine_system_desc"
                 android:textColor="@color/text_secondary"
-                android:textSize="12sp" />
+                android:textSize="11sp" />
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -110,7 +184,7 @@
                     android:id="@+id/btnHelp"
                     style="@style/SettingsButton"
                     android:layout_marginStart="8dp"
-                    android:text="도움말" />
+                    android:text="@string/perm_help" />
             </LinearLayout>
 
             <TextView
@@ -140,7 +214,7 @@
                     android:gravity="end"
                     android:text="5 : 5"
                     android:textColor="@color/text_primary"
-                    android:textSize="14sp" />
+                    android:textSize="13sp" />
             </LinearLayout>
 
             <TextView
@@ -154,18 +228,18 @@
                 android:orientation="horizontal">
 
                 <TextView
-                    android:layout_width="52dp"
+                    android:layout_width="46dp"
                     android:layout_height="wrap_content"
-                    android:text="왼쪽"
+                    android:text="@string/pane_left"
                     android:textColor="@color/text_primary"
-                    android:textSize="13sp" />
+                    android:textSize="12sp" />
 
                 <SeekBar
                     android:id="@+id/leftDpiSeek"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:max="36"
+                    android:max="38"
                     android:progressTint="@color/m_blue"
                     android:thumbTint="@color/m_blue" />
 
@@ -176,7 +250,7 @@
                     android:gravity="end"
                     android:text="240 dpi"
                     android:textColor="@color/text_primary"
-                    android:textSize="13sp" />
+                    android:textSize="12sp" />
             </LinearLayout>
 
             <LinearLayout
@@ -186,18 +260,18 @@
                 android:orientation="horizontal">
 
                 <TextView
-                    android:layout_width="52dp"
+                    android:layout_width="46dp"
                     android:layout_height="wrap_content"
-                    android:text="오른쪽"
+                    android:text="@string/pane_right"
                     android:textColor="@color/text_primary"
-                    android:textSize="13sp" />
+                    android:textSize="12sp" />
 
                 <SeekBar
                     android:id="@+id/rightDpiSeek"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:max="36"
+                    android:max="38"
                     android:progressTint="@color/m_blue"
                     android:thumbTint="@color/m_blue" />
 
@@ -208,77 +282,38 @@
                     android:gravity="end"
                     android:text="240 dpi"
                     android:textColor="@color/text_primary"
-                    android:textSize="13sp" />
+                    android:textSize="12sp" />
             </LinearLayout>
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="2dp"
-                android:text="좁은 창(2:8)에서 앱 글자가 너무 크면 DPI를 낮추고, 너무 작으면 높이세요. 가상 디스플레이 모드에서 적용됩니다."
+                android:text="2:8처럼 좁은 창에서 앱 글자가 크면 배율을 낮추세요. 가상 디스플레이 방식에서만 적용됩니다."
                 android:textColor="@color/text_secondary"
-                android:textSize="11sp" />
+                android:textSize="10sp" />
 
             <TextView
                 style="@style/SettingsSection"
                 android:text="@string/section_presets" />
 
             <LinearLayout
-                android:id="@+id/presetList"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="vertical" />
-
-            <TextView
-                style="@style/SettingsSection"
-                android:text="@string/section_intro" />
-
-            <androidx.appcompat.widget.SwitchCompat
-                android:id="@+id/switchIntro"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:paddingTop="6dp"
-                android:paddingBottom="6dp"
-                android:text="@string/intro_enabled"
-                android:textColor="@color/text_primary"
-                android:textSize="14sp" />
-
-            <androidx.appcompat.widget.SwitchCompat
-                android:id="@+id/switchSkipReturn"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:paddingTop="6dp"
-                android:paddingBottom="6dp"
-                android:text="@string/intro_skip_return"
-                android:textColor="@color/text_primary"
-                android:textSize="14sp" />
-
-            <TextView
-                android:id="@+id/tvVideoName"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:text="@string/intro_video_none"
-                android:textColor="@color/text_secondary"
-                android:textSize="12sp" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
                 android:orientation="horizontal">
 
                 <TextView
-                    android:id="@+id/btnPickVideo"
+                    android:id="@+id/btnImportDefaults"
                     style="@style/SettingsButton"
-                    android:text="@string/intro_pick_video" />
-
-                <TextView
-                    android:id="@+id/btnResetVideo"
-                    style="@style/SettingsButton"
-                    android:layout_marginStart="8dp"
-                    android:text="@string/intro_reset_video" />
+                    android:text="@string/btn_import_defaults" />
             </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/presetList"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:orientation="vertical" />
 
             <TextView
                 style="@style/SettingsSection"
@@ -291,33 +326,33 @@
                 android:orientation="horizontal">
 
                 <RadioButton
-                    android:id="@+id/rbDockBottom"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="@string/dock_bottom"
-                    android:textColor="@color/text_primary"
-                    android:textSize="14sp" />
-
-                <RadioButton
                     android:id="@+id/rbDockLeft"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:text="@string/dock_left"
                     android:textColor="@color/text_primary"
-                    android:textSize="14sp" />
+                    android:textSize="13sp" />
+
+                <RadioButton
+                    android:id="@+id/rbDockRight"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/dock_right"
+                    android:textColor="@color/text_primary"
+                    android:textSize="13sp" />
             </RadioGroup>
 
             <androidx.appcompat.widget.SwitchCompat
                 android:id="@+id/switchAutoHide"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:paddingTop="6dp"
-                android:paddingBottom="6dp"
-                android:text="@string/dock_auto_hide"
+                android:paddingTop="4dp"
+                android:paddingBottom="4dp"
+                android:text="@string/switch_dock_auto_hide"
                 android:textColor="@color/text_primary"
-                android:textSize="14sp" />
+                android:textSize="13sp" />
 
             <TextView
                 style="@style/SettingsSection"
@@ -344,10 +379,9 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="18dp"
-                android:layout_marginBottom="20dp"
-                android:text="BMW F07 Launcher v1.0 · 2560×720 / Android 14"
+                android:text="BMW F07 Launcher v2.0 · 2560×720 / Android 14"
                 android:textColor="#FF4A4A4A"
-                android:textSize="11sp" />
+                android:textSize="10sp" />
         </LinearLayout>
     </ScrollView>
 </LinearLayout>

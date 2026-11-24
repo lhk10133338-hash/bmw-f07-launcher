@@ -78,4 +78,10 @@ class AppRepository(private val context: Context) {
 
     fun launchIntent(pkg: String): android.content.Intent? =
         context.packageManager.getLaunchIntentForPackage(pkg)
+
+    /** Returns [pkg] only when it is still installed (used when restoring the last session). */
+    fun installedOrNull(pkg: String?): String? {
+        if (pkg == null) return null
+        return if (cachedApps.any { it.packageName == pkg }) pkg else null
+    }
 }

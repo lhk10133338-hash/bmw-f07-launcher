@@ -1,90 +1,107 @@
 package com.hyteck.bmwf07launcher.data
 
 import android.content.Context
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
- * All persisted launcher state: engine, split ratio, per-pane DPI, six presets,
- * intro options, dock options and the last session.
+ * One saved split combination: two app slots plus the ratio they open with.
+ * Presets live in the dock (CarCar style) and are created from the running screen.
+ */
+data class Preset(
+    val name: String,
+    val left: String?,
+    val right: String?,
+    val ratio: Int
+) {
+    fun isEmpty(): Boolean = left == null && right == null
+}
+
+/**
+ * All persisted launcher state.
+ *
+ * Every write goes through [commit] instead of [android.content.SharedPreferences.Editor.apply]:
+ * a head unit can lose power the instant the ignition goes off, and an asynchronous write may
+ * not have reached the disk by then. The data is tiny, so the synchronous write costs nothing.
  */
 class Settings(context: Context) {
 
     private val prefs =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+    private fun write(block: (android.content.SharedPreferences.Editor) -> Unit) {
+        val editor = prefs.edit()
+        block(editor)
+        editor.commit()
+    }
+
+    private fun putString(key: String, value: String?) {
+        write { editor ->
+            if (value == null) editor.remove(key) else editor.putString(key, value)
+        }
+    }
+
     var engine: String
         get() = prefs.getString(KEY_ENGINE, ENGINE_SYSTEM) ?: ENGINE_SYSTEM
-        set(value) {
-            prefs.edit().putString(KEY_ENGINE, value).apply()
-        }
+        set(value) = putString(KEY_ENGINE, value)
 
     /** Left pane width percentage, 20..80. */
     var ratio: Int
         get() = prefs.getInt(KEY_RATIO, 50).coerceIn(20, 80)
-        set(value) {
-            prefs.edit().putInt(KEY_RATIO, value.coerceIn(20, 80)).apply()
-        }
+        set(value) = write { it.putInt(KEY_RATIO, value.coerceIn(20, 80)) }
 
     var leftDpi: Int
         get() = prefs.getInt(KEY_LEFT_DPI, 240).coerceIn(120, 480)
-        set(value) {
-            prefs.edit().putInt(KEY_LEFT_DPI, value.coerceIn(120, 480)).apply()
-        }
+        set(value) = write { it.putInt(KEY_LEFT_DPI, value.coerceIn(120, 480)) }
 
     var rightDpi: Int
         get() = prefs.getInt(KEY_RIGHT_DPI, 240).coerceIn(120, 480)
-        set(value) {
-            prefs.edit().putInt(KEY_RIGHT_DPI, value.coerceIn(120, 480)).apply()
-        }
+        set(value) = write { it.putInt(KEY_RIGHT_DPI, value.coerceIn(120, 480)) }
+
+    /** Left/right apps of the running session, restored after a reboot when [rememberSession]. */
+    var sessionLeft: String?
+        get() = prefs.getString(KEY_SESSION_LEFT, null)
+        set(value) = putString(KEY_SESSION_LEFT, value)
+
+    var sessionRight: String?
+        get() = prefs.getString(KEY_SESSION_RIGHT, null)
+        set(value) = putString(KEY_SESSION_RIGHT, value)
+
+    var rememberSession: Boolean
+        get() = prefs.getBoolean(KEY_REMEMBER_SESSION, true)
+        set(value) = write { it.putBoolean(KEY_REMEMBER_SESSION, value) }
+
+    var bootAutostart: Boolean
+        get() = prefs.getBoolean(KEY_BOOT_AUTOSTART, true)
+        set(value) = write { it.putBoolean(KEY_BOOT_AUTOSTART, value) }
 
     var dockAtLeft: Boolean
-        get() = prefs.getBoolean(KEY_DOCK_LEFT, false)
-        set(value) {
-            prefs.edit().putBoolean(KEY_DOCK_LEFT, value).apply()
-        }
+        get() = prefs.getBoolean(KEY_DOCK_LEFT, true)
+        set(value) = write { it.putBoolean(KEY_DOCK_LEFT, value) }
 
     var dockAutoHide: Boolean
         get() = prefs.getBoolean(KEY_DOCK_AUTO_HIDE, false)
-        set(value) {
-            prefs.edit().putBoolean(KEY_DOCK_AUTO_HIDE, value).apply()
-        }
+        set(value) = write { it.putBoolean(KEY_DOCK_AUTO_HIDE, value) }
+
+    var dockHidden: Boolean
+        get() = prefs.getBoolean(KEY_DOCK_HIDDEN, false)
+        set(value) = write { it.putBoolean(KEY_DOCK_HIDDEN, value) }
 
     var introEnabled: Boolean
         get() = prefs.getBoolean(KEY_INTRO, true)
-        set(value) {
-            prefs.edit().putBoolean(KEY_INTRO, value).apply()
-        }
+        set(value) = write { it.putBoolean(KEY_INTRO, value) }
 
     var introSkipOnReturn: Boolean
         get() = prefs.getBoolean(KEY_INTRO_SKIP_RETURN, true)
-        set(value) {
-            prefs.edit().putBoolean(KEY_INTRO_SKIP_RETURN, value).apply()
-        }
+        set(value) = write { it.putBoolean(KEY_INTRO_SKIP_RETURN, value) }
 
     var introVideoUri: String?
         get() = prefs.getString(KEY_INTRO_URI, null)
-        set(value) {
-            val editor = prefs.edit()
-            if (value == null) editor.remove(KEY_INTRO_URI) else editor.putString(KEY_INTRO_URI, value)
-            editor.apply()
-        }
+        set(value) = putString(KEY_INTRO_URI, value)
 
     var lastPreset: Int
-        get() = prefs.getInt(KEY_LAST_PRESET, 0).coerceIn(0, 5)
-        set(value) {
-            prefs.edit().putInt(KEY_LAST_PRESET, value.coerceIn(0, 5)).apply()
-        }
-
-    var lastLeftPkg: String?
-        get() = prefs.getString(KEY_LAST_LEFT, null)
-        set(value) {
-            prefs.edit().putString(KEY_LAST_LEFT, value).apply()
-        }
-
-    var lastRightPkg: String?
-        get() = prefs.getString(KEY_LAST_RIGHT, null)
-        set(value) {
-            prefs.edit().putString(KEY_LAST_RIGHT, value).apply()
-        }
+        get() = prefs.getInt(KEY_LAST_PRESET, -1)
+        set(value) = write { it.putInt(KEY_LAST_PRESET, value) }
 
     val hiddenPackages: MutableSet<String>
         get() = (prefs.getStringSet(KEY_HIDDEN, null) ?: emptySet()).toMutableSet()
@@ -92,36 +109,112 @@ class Settings(context: Context) {
     fun addHidden(pkg: String) {
         val set = hiddenPackages
         set.add(pkg)
-        prefs.edit().putStringSet(KEY_HIDDEN, set).apply()
+        write { it.putStringSet(KEY_HIDDEN, set) }
     }
 
     fun removeHidden(pkg: String) {
         val set = hiddenPackages
         set.remove(pkg)
-        prefs.edit().putStringSet(KEY_HIDDEN, set).apply()
+        write { it.putStringSet(KEY_HIDDEN, set) }
     }
 
-    fun presetLeft(index: Int): String? = prefs.getString("preset_${index}_left", null)
+    /** Apps pinned to the top of the app drawer. */
+    val favorites: MutableSet<String>
+        get() = (prefs.getStringSet(KEY_FAVORITES, null) ?: emptySet()).toMutableSet()
 
-    fun presetRight(index: Int): String? = prefs.getString("preset_${index}_right", null)
-
-    fun setPresetSide(index: Int, left: Boolean, pkg: String?) {
-        val key = if (left) "preset_${index}_left" else "preset_${index}_right"
-        val editor = prefs.edit()
-        if (pkg == null) editor.remove(key) else editor.putString(key, pkg)
-        editor.apply()
+    fun toggleFavorite(pkg: String): Boolean {
+        val set = favorites
+        val added = if (set.contains(pkg)) {
+            set.remove(pkg)
+            false
+        } else {
+            set.add(pkg)
+            true
+        }
+        write { it.putStringSet(KEY_FAVORITES, set) }
+        return added
     }
 
-    fun clearPreset(index: Int) {
-        prefs.edit()
-            .remove("preset_${index}_left")
-            .remove("preset_${index}_right")
-            .apply()
+    // --------------------------------------------------------------- presets
+
+    fun presets(): MutableList<Preset> {
+        val raw = prefs.getString(KEY_PRESETS, null) ?: return ArrayList()
+        val result = ArrayList<Preset>()
+        try {
+            val array = JSONArray(raw)
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                result.add(
+                    Preset(
+                        name = item.optString("name", ""),
+                        left = if (item.isNull("left")) null else item.optString("left", null),
+                        right = if (item.isNull("right")) null else item.optString("right", null),
+                        ratio = item.optInt("ratio", 50).coerceIn(20, 80)
+                    )
+                )
+            }
+        } catch (ignored: Exception) {
+            return ArrayList()
+        }
+        return result
     }
+
+    fun savePresets(list: List<Preset>) {
+        val array = JSONArray()
+        for (preset in list.take(MAX_PRESETS)) {
+            val item = JSONObject()
+            item.put("name", preset.name)
+            item.put("left", preset.left ?: JSONObject.NULL)
+            item.put("right", preset.right ?: JSONObject.NULL)
+            item.put("ratio", preset.ratio.coerceIn(20, 80))
+            array.put(item)
+        }
+        putString(KEY_PRESETS, array.toString())
+    }
+
+    fun addPreset(preset: Preset): Boolean {
+        val list = presets()
+        if (list.size >= MAX_PRESETS) return false
+        if (list.any { it.left == preset.left && it.right == preset.right && it.ratio == preset.ratio }) {
+            return false
+        }
+        list.add(preset)
+        savePresets(list)
+        return true
+    }
+
+    fun removePreset(index: Int) {
+        val list = presets()
+        if (index in list.indices) {
+            list.removeAt(index)
+            savePresets(list)
+        }
+    }
+
+    fun movePreset(from: Int, to: Int) {
+        val list = presets()
+        if (from !in list.indices || to !in list.indices || from == to) return
+        val item = list.removeAt(from)
+        list.add(to, item)
+        savePresets(list)
+    }
+
+    fun updatePreset(index: Int, transform: (Preset) -> Preset) {
+        val list = presets()
+        if (index !in list.indices) return
+        list[index] = transform(list[index])
+        savePresets(list)
+    }
+
+    fun hasPresets(): Boolean = presets().isNotEmpty()
 
     companion object {
         const val ENGINE_SYSTEM = "system"
         const val ENGINE_VIRTUAL = "virtual"
+
+        const val MAX_PRESETS = 12
+        const val MIN_DPI = 100
+        const val MAX_DPI = 480
 
         private const val PREFS_NAME = "bmw_launcher_settings"
         private const val KEY_ENGINE = "engine"
@@ -130,23 +223,31 @@ class Settings(context: Context) {
         private const val KEY_RIGHT_DPI = "right_dpi"
         private const val KEY_DOCK_LEFT = "dock_left"
         private const val KEY_DOCK_AUTO_HIDE = "dock_auto_hide"
+        private const val KEY_DOCK_HIDDEN = "dock_hidden"
         private const val KEY_INTRO = "intro_enabled"
         private const val KEY_INTRO_SKIP_RETURN = "intro_skip_return"
         private const val KEY_INTRO_URI = "intro_uri"
         private const val KEY_LAST_PRESET = "last_preset"
-        private const val KEY_LAST_LEFT = "last_left"
-        private const val KEY_LAST_RIGHT = "last_right"
         private const val KEY_HIDDEN = "hidden_packages"
+        private const val KEY_FAVORITES = "favorite_packages"
+        private const val KEY_PRESETS = "split_presets_v2"
+        private const val KEY_REMEMBER_SESSION = "remember_session"
+        private const val KEY_BOOT_AUTOSTART = "boot_autostart"
+        private const val KEY_SESSION_LEFT = "session_left"
+        private const val KEY_SESSION_RIGHT = "session_right"
 
-        val DEFAULT_LEFT = listOf("nmap", "nmap", "nmap", "tmap", "tmap", "tmap")
-        val DEFAULT_RIGHT = listOf("flo", "qq", "revanced", "flo", "qq", "revanced")
-        val PRESET_TITLES = listOf(
-            "네이버지도 + FLO",
-            "네이버지도 + QQ MUSIC",
-            "네이버지도 + ReVanced",
-            "티맵 + FLO",
-            "티맵 + QQ MUSIC",
-            "티맵 + ReVanced"
+        /**
+         * The six combinations the user asked for on 2026-11-24, imported with one tap
+         * from the settings screen (the dock starts empty, as in CarCar Launcher).
+         * Keys are resolved to installed packages by [AppRepository.resolveKey].
+         */
+        val BMW_PRESETS = listOf(
+            Triple("nmap", "flo", "네이버지도 + FLO"),
+            Triple("nmap", "qq", "네이버지도 + QQ MUSIC"),
+            Triple("nmap", "revanced", "네이버지도 + ReVanced"),
+            Triple("tmap", "flo", "티맵 + FLO"),
+            Triple("tmap", "qq", "티맵 + QQ MUSIC"),
+            Triple("tmap", "revanced", "티맵 + ReVanced")
         )
     }
 }

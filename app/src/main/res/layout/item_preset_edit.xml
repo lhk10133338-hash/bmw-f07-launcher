@@ -2,18 +2,23 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
+    android:background="?attr/selectableItemBackground"
+    android:clickable="true"
+    android:focusable="true"
     android:gravity="center_vertical"
     android:orientation="horizontal"
-    android:paddingTop="4dp"
-    android:paddingBottom="4dp">
+    android:paddingTop="3dp"
+    android:paddingBottom="3dp">
 
     <TextView
         android:id="@+id/presetName"
-        android:layout_width="110dp"
+        android:layout_width="92dp"
         android:layout_height="wrap_content"
-        android:text="1"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:text=""
         android:textColor="@color/text_primary"
-        android:textSize="13sp" />
+        android:textSize="12sp" />
 
     <TextView
         android:id="@+id/leftButton"
@@ -22,15 +27,28 @@
         android:layout_weight="1"
         android:ellipsize="end"
         android:maxLines="1"
-        android:text="왼쪽 앱" />
+        android:paddingTop="7dp"
+        android:paddingBottom="7dp"
+        android:text="@string/pane_left" />
 
     <TextView
         android:id="@+id/rightButton"
         style="@style/SettingsButton"
         android:layout_width="0dp"
-        android:layout_marginStart="6dp"
+        android:layout_marginStart="5dp"
         android:layout_weight="1"
         android:ellipsize="end"
         android:maxLines="1"
-        android:text="오른쪽 앱" />
+        android:paddingTop="7dp"
+        android:paddingBottom="7dp"
+        android:text="@string/pane_right" />
+
+    <TextView
+        android:id="@+id/ratioText"
+        android:layout_width="44dp"
+        android:layout_height="wrap_content"
+        android:gravity="end"
+        android:text=""
+        android:textColor="@color/text_secondary"
+        android:textSize="10sp" />
 </LinearLayout>
