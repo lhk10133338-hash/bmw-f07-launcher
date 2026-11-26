@@ -9,12 +9,18 @@ import android.hardware.display.DisplayManager
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.Gravity
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.View
+import android.view.ViewGroup
+import android.widget.FrameLayout
+import android.widget.TextView
 import com.hyteck.bmwf07launcher.data.Settings
 import com.hyteck.bmwf07launcher.shizuku.ShizukuBridge
+import com.hyteck.bmwf07launcher.util.dp
 import kotlin.math.abs
 
 /**
@@ -23,12 +29,25 @@ import kotlin.math.abs
  *
  * ## Which version this is
  *
- * v4.2. It is **v4.0's output path** (the only one that has ever shown a picture on the car unit)
- * plus the two fixes that v4.0 actually needed. Everything v4.1 added around the display's
- * lifetime — `setDisplayState` on create/resume, rebuilding a display because
- * `DisplayManager.getDisplay()` did not list it, and the 400 ms re-apply loop — is gone: v4.0 put
- * a picture on the right pane for a whole session with none of it, and v4.1 stopped showing
- * anything at all after adding it.
+ * v4.3. It is **v4.0's output path** (the only one that has ever shown a picture on the car unit)
+ * plus the fixes v4.0 actually needed. Everything v4.1 added around the display's lifetime —
+ * `setDisplayState` on create/resume, rebuilding a display because `DisplayManager.getDisplay()`
+ * did not list it, and the 400 ms re-apply loop — is gone: v4.0 put a picture on the right pane for
+ * a whole session with none of it, and v4.1 stopped showing anything at all after adding it.
+ *
+ * ## What v4.3 fixes (both panes black on the car unit, 2026-11-26)
+ *
+ *  1. **`setFixedSize` no longer feeds its own dead surface to the display.** v4.2 pinned the
+ *     buffer and, in the very same pass, called `create`/`setSurface`/`resize` with the surface
+ *     that `setFixedSize` had just scheduled for destruction: a `SurfaceView` throws the current
+ *     Surface away and builds another one asynchronously (`surfaceDestroyed` → `surfaceCreated`),
+ *     so the display was handed a surface that died one frame later — a black pane. Now the
+ *     buffer is pinned only when its `surfaceFrame` really has another size, and after a pin the
+ *     pass **ends**: the next scheduled pass runs with the new, stable surface.
+ *  2. **A failed route says so on screen.** If the platform privilege behind the trusted display
+ *     is missing, or `create`/the app launch fails, a short status line appears over the pane
+ *     (a toast alone vanishes before anyone can read it in a car) and the reason is logged. A
+ *     healthy pane never shows it.
  *
  * ## What v4.0 does (kept)
  *
@@ -39,7 +58,7 @@ import kotlin.math.abs
  *  3. On create the size is applied first and the output surface last
  *     ([SystemDisplayHost.create]).
  *
- * ## What v4.2 fixes
+ * ## What is kept from v4.2
  *
  *  1. **Nothing is done from inside a SurfaceView callback.** v4.0 called
  *     `setFixedSize`/`resize` synchronously from `surfaceChanged`, i.e. while the view was still
@@ -92,6 +111,15 @@ class VirtualDisplayEngine(
     /** The rectangle the SurfaceView's buffer was last pinned to. */
     private val pinned = HashMap<Side, IntArray>()
 
+    /**
+     * [width, height, attempts] of the last `setFixedSize` try, so a buffer that does not take the
+     * pin is not re-pinned (and its surface not re-created) on every single pass.
+     */
+    private val pinTries = HashMap<Side, IntArray>()
+
+    /** A one-line status over a pane, shown only when something actually failed (v4.3). */
+    private val statusLabels = HashMap<Side, TextView>()
+
     private val packages = HashMap<Side, String>()
     private val densities = HashMap<Side, Int>()
 
@@ -111,6 +139,7 @@ class VirtualDisplayEngine(
     private val syncing = HashSet<Side>()
     private var unavailableReported = false
     private var launchErrorReported = false
+    private var privilegeReported = false
     private var released = false
 
     private val syncRunnable = Runnable {
@@ -143,7 +172,9 @@ class VirtualDisplayEngine(
         }
         view.holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(holder: SurfaceHolder) {
-                attachSurface(side, holder.surface)
+                // v4.3: only schedule. The surface this callback announces is created inside
+                // SurfaceView's own update; the scheduled pass runs when it is complete and uses
+                // it there, the same rule `setFixedSize` follows below.
                 scheduleSync()
             }
 
@@ -207,6 +238,19 @@ class VirtualDisplayEngine(
             val host = SystemDisplayHost(displayManager)
             hosts[side] = host
             return host
+        }
+        // v4.3: the SystemUID APK only draws a picture while its process really is the platform
+        // UID; on a unit that ended up with a plain app identity, this falls through to a display
+        // no other app may be started on, and the pane stays black. Say it once, on screen.
+        if (!privilegeReported && context.packageName.endsWith(SYSTEMUID_SUFFIX)) {
+            privilegeReported = true
+            Log.e(
+                TAG,
+                "SystemUID build without ADD_TRUSTED_DISPLAY (pkg=${context.packageName}, " +
+                    "uid=${android.os.Process.myUid()}) — falling back"
+            )
+            showStatus(side, "시스템 권한 미인식\n(ADD_TRUSTED_DISPLAY 없음)")
+            onMessage("시스템 권한이 인식되지 않았습니다 — 플랫폼 서명으로 설치한 APK인지 확인해 주세요")
         }
         val control = ShizukuBridge.controlOrNull()
         if (control != null) {
@@ -312,11 +356,32 @@ class VirtualDisplayEngine(
                 return
             }
 
-            // 1) The pane's buffer is pinned to the pane rectangle, from this scheduled pass and
-            //    only when the rectangle really changed (v4.2). v4.0 did it from surfaceChanged
-            //    on every pass, which is what froze the left pane.
+            // 1) The pane's buffer must be the pane rectangle before the display is pointed at
+            //    it. Only a buffer that really has another size is pinned, and a pin always ends
+            //    this pass (v4.3).
             if (!pinnedSame) {
-                if (runCatching { holder.setFixedSize(width, height) }.isSuccess) {
+                val frame = holder.surfaceFrame
+                val frameSame = abs(frame.width() - width) <= SIZE_TOLERANCE &&
+                    abs(frame.height() - height) <= SIZE_TOLERANCE
+                if (frameSame) {
+                    // The SurfaceView is already the pane rectangle (it is `match_parent`, so this
+                    // is the normal case). Pinning it again would only make the platform destroy
+                    // this surface and build another one — the v4.2 black pane. Just record it.
+                    pinned[side] = intArrayOf(width, height)
+                } else if (pinTriesFor(side, width, height) <= MAX_PIN_ATTEMPTS &&
+                    runCatching { holder.setFixedSize(width, height) }.isSuccess
+                ) {
+                    pinned[side] = intArrayOf(width, height)
+                    Log.i(TAG, "pane $side buffer pinned to ${width}x$height; waiting for the new surface")
+                    // v4.3 — the whole point: `setFixedSize` has just scheduled the current
+                    // Surface for destruction. Anything handed to the display from this pass (the
+                    // create below, `setSurface`, `resize`) would point it at that dead surface.
+                    // The new surface arrives through surfaceCreated/surfaceChanged, which
+                    // schedule the pass that continues with it.
+                    scheduleSync()
+                    return
+                } else {
+                    // Pinning did not take: use the surface the view actually has.
                     pinned[side] = intArrayOf(width, height)
                 }
             }
@@ -353,6 +418,15 @@ class VirtualDisplayEngine(
             // 3) The first pass for this pane: create the display, then start its app.
             val created = host.create(displayName(side), width, height, density, surface)
             if (created < 0) {
+                // v4.3: say which route refused, on screen and in the log — a pane that stays
+                // black gives nothing else to go on.
+                Log.e(
+                    TAG,
+                    "pane $side create failed via ${hostName(host)} " +
+                        "(trusted=${Privileges.canCreateTrustedDisplay(context)}, " +
+                        "systemUid=${Privileges.isSystemUid()})"
+                )
+                showStatus(side, "가상 화면을 만들 수 없습니다\n${hostName(host)}")
                 reportUnavailable()
                 return
             }
@@ -360,8 +434,13 @@ class VirtualDisplayEngine(
             surfaces[side] = surface
             sizes[side] = intArrayOf(width, height, density)
             resizeFailures.remove(side)
-            Log.i(TAG, "pane $side display $created created at ${width}x$height @$density")
-            packages[side]?.let { launchOnDisplay(it, created, reorder = true) }
+            hideStatus(side)
+            Log.i(
+                TAG,
+                "pane $side display $created created at ${width}x$height @$density " +
+                    "via ${hostName(host)}, surface ${surface.hashCode()}"
+            )
+            packages[side]?.let { launchOnDisplay(side, it, created, reorder = true) }
             scheduleReadBack(side, width, height, density, 0)
         } finally {
             syncing.remove(side)
@@ -417,6 +496,61 @@ class VirtualDisplayEngine(
     }
 
     /**
+     * The pane's next `setFixedSize` try for this rectangle: 1 the first time, then 2, 3… A new
+     * rectangle starts again at 1.
+     */
+    private fun pinTriesFor(side: Side, width: Int, height: Int): Int {
+        val record = pinTries[side]
+        if (record == null || record[0] != width || record[1] != height) {
+            pinTries[side] = intArrayOf(width, height, 1)
+            return 1
+        }
+        record[2] += 1
+        return record[2]
+    }
+
+    private fun hostName(host: DisplayHost): String = when (host) {
+        is SystemDisplayHost -> "플랫폼 권한 경로(TRUSTED)"
+        is ShizukuDisplayHost -> "Shizuku(shell) 경로"
+        else -> "앱 자체 권한 경로"
+    }
+
+    /**
+     * v4.3: a short status line over a pane, for the cases where the pane cannot show a picture
+     * for a reason the log only would keep to itself. A toast is gone before anyone in a car has
+     * read it, so the line stays until the pane has a display again ([hideStatus]).
+     */
+    private fun showStatus(side: Side, text: String) {
+        handler.post {
+            if (released) return@post
+            val view = viewOf(side)
+            val parent = view.parent as? ViewGroup ?: return@post
+            val label = statusLabels.getOrPut(side) {
+                TextView(parent.context).apply {
+                    setTextColor(0xFFFFD24A.toInt())
+                    textSize = 11f
+                    setPadding(context.dp(8), context.dp(4), context.dp(8), context.dp(4))
+                    setBackgroundColor(0xCC000000.toInt())
+                    maxLines = 3
+                    layoutParams = FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                    ).apply { topMargin = context.dp(6) }
+                }.also { parent.addView(it) }
+            }
+            label.text = text
+            label.visibility = View.VISIBLE
+        }
+    }
+
+    private fun hideStatus(side: Side) {
+        handler.post {
+            statusLabels[side]?.visibility = View.GONE
+        }
+    }
+
+    /**
      * Forgets one pane's display so the next pass builds a fresh one. Called only from
      * [sync] after [MAX_RESIZE_FAILURES] refusals in a row — a display that has stopped answering
      * has already lost its content, so nothing is thrown away that was still there.
@@ -447,7 +581,7 @@ class VirtualDisplayEngine(
             scheduleSync()
             return
         }
-        launchOnDisplay(packageName, displayId, reorder = false)
+        launchOnDisplay(side, packageName, displayId, reorder = false)
     }
 
     override fun clear(side: Side) {
@@ -478,7 +612,7 @@ class VirtualDisplayEngine(
         }
     }
 
-    private fun launchOnDisplay(packageName: String, displayId: Int, reorder: Boolean) {
+    private fun launchOnDisplay(side: Side, packageName: String, displayId: Int, reorder: Boolean) {
         val intent = context.packageManager.getLaunchIntentForPackage(packageName)
         if (intent == null) {
             onMessage("앱을 찾을 수 없습니다: $packageName")
@@ -500,6 +634,10 @@ class VirtualDisplayEngine(
             context.startActivity(intent, options.toBundle())
             launchErrorReported = false
         } catch (e: Exception) {
+            // v4.3: the one failure that reads as "a black pane" from the driver's seat — the
+            // display never received the app. Name it on the pane and in the log.
+            Log.e(TAG, "pane $side launch of $packageName on display $displayId failed", e)
+            showStatus(side, "앱을 이 창에서 열 수 없습니다\n${e.javaClass.simpleName}")
             if (!launchErrorReported) {
                 launchErrorReported = true
                 reportUnavailable()
@@ -519,6 +657,9 @@ class VirtualDisplayEngine(
         hosts.clear()
         sizes.clear()
         pinned.clear()
+        pinTries.clear()
+        statusLabels.values.forEach { label -> (label.parent as? ViewGroup)?.removeView(label) }
+        statusLabels.clear()
         packages.clear()
         waits.clear()
         surfaceWaits.clear()
@@ -546,5 +687,11 @@ class VirtualDisplayEngine(
 
         /** Refusals in a row before a pane's display is rebuilt (it is not answering any more). */
         private const val MAX_RESIZE_FAILURES = 2
+
+        /** `setFixedSize` tries per pane rectangle before the surface the view has is used. */
+        private const val MAX_PIN_ATTEMPTS = 2
+
+        /** The platform-signed build's application id suffix (see app/build.gradle.kts). */
+        private const val SYSTEMUID_SUFFIX = ".systemuid"
     }
 }

@@ -110,7 +110,7 @@ class LocalDisplayHost(private val displayManager: DisplayManager) : DisplayHost
 
     override fun resize(displayId: Int, width: Int, height: Int, dpi: Int): Boolean {
         val display = displays[displayId] ?: return false
-        if (display.display == null) return false
+        // v4.3: v4.0 had no `display.display == null` guard here either; the call itself decides.
         return try {
             display.resize(width, height, dpi)
             true
@@ -121,7 +121,6 @@ class LocalDisplayHost(private val displayManager: DisplayManager) : DisplayHost
 
     override fun setSurface(displayId: Int, surface: Surface?) {
         val display = displays[displayId] ?: return
-        if (display.display == null) return
         try {
             display.surface = surface
         } catch (e: Exception) {

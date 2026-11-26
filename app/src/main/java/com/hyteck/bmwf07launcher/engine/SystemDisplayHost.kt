@@ -24,6 +24,10 @@ import android.view.Surface
  *     only place the display state is touched (v4.1 also forced `setDisplayState(true)` on create
  *     and on every resume, and the panes stopped drawing).
  *
+ * v4.3 removed the `display.display == null` guards `resize`/`setSurface` had picked up in v4.2:
+ * v4.0 had none, and skipping a call because of that property is how a pane can keep a size its
+ * display never had. Each call is wrapped in `try/catch` on its own.
+ *
  * On the car unit the launcher process runs as the platform UID, so no helper is involved: this
  * host is created in-process by [VirtualDisplayEngine.hostFor] when
  * [Privileges.canCreateTrustedDisplay] is true.
@@ -58,8 +62,9 @@ class SystemDisplayHost(private val displayManager: DisplayManager) : DisplayHos
 
     override fun resize(displayId: Int, width: Int, height: Int, dpi: Int): Boolean {
         val display = displays[displayId] ?: return false
-        // A display the platform already removed cannot be resized.
-        if (display.display == null) return false
+        // v4.3: no `display.display == null` guard. v4.0 had none either, and this firmware's
+        // answer to that property says nothing about whether `resize` works: skipping the call on
+        // it is how a pane kept a size its display never really had. The call itself decides.
         return try {
             display.resize(width, height, dpi)
             WindowService.dontOverrideDisplayInfo(displayId)
@@ -71,7 +76,6 @@ class SystemDisplayHost(private val displayManager: DisplayManager) : DisplayHos
 
     override fun setSurface(displayId: Int, surface: Surface?) {
         val display = displays[displayId] ?: return
-        if (display.display == null) return
         try {
             // The same Surface object is a no-op on the platform side (`VirtualDisplay.setSurface`
             // returns early when the surface is unchanged), so re-attaching it costs nothing.

@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.provider.Settings as AndroidSettings
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -25,6 +26,7 @@ import com.hyteck.bmwf07launcher.databinding.ItemPresetEditBinding
 import com.hyteck.bmwf07launcher.service.LauncherAccessibilityService
 import com.hyteck.bmwf07launcher.shizuku.ShizukuBridge
 import com.hyteck.bmwf07launcher.ui.AppPickerDialog
+import com.hyteck.bmwf07launcher.util.BootFileBrowser
 import com.hyteck.bmwf07launcher.util.BootMediaPicker
 import com.hyteck.bmwf07launcher.util.applyImmersive
 import com.hyteck.bmwf07launcher.util.dp
@@ -82,8 +84,16 @@ class SettingsActivity : ScaledActivity() {
      */
     private val mediaPermission =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-            showBuiltInMediaBrowser()
+            // v4.3: whatever the user answered, the folder browser opens with what it can see.
+            pendingAfterPermission?.invoke()
+            pendingAfterPermission = null
         }
+
+    /** Work to continue once a storage permission prompt has been answered (v4.3). */
+    private var pendingAfterPermission: (() -> Unit)? = null
+
+    /** Set while the "모든 파일 접근" settings screen is in front, so its return opens the browser. */
+    private var waitingStorageReturn = false
 
     private fun isImageType(type: String?): Boolean = type?.startsWith("image") == true
 
@@ -139,6 +149,13 @@ class SettingsActivity : ScaledActivity() {
         applyImmersive()
         ShizukuBridge.refresh()
         updateShizukuLabel()
+        // v4.3: back from the "모든 파일 접근" screen — open the browser the user was after.
+        if (waitingStorageReturn) {
+            waitingStorageReturn = false
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()) {
+                showBootFileBrowser()
+            }
+        }
     }
 
     override fun onDestroy() {
@@ -177,19 +194,10 @@ class SettingsActivity : ScaledActivity() {
             settings.introSkipOnReturn = checked
         }
         binding.btnPickVideo.setOnClickListener {
-            // v4.2: OPEN_DOCUMENT → GET_CONTENT → gallery PICK, and, when this unit has no picker
-            // at all (many head units ship without DocumentsUI, and the SystemUID build runs as
-            // UID system), the launcher's own list of media files.
-            val opened = BootMediaPicker.launch { intent -> pickIntroMedia.launch(intent) }
-            if (!opened) {
-                toast("이 기기에는 사진/동영상 선택기가 없어 목록에서 고릅니다")
-                openBuiltInBrowser()
-            }
-        }
-        // The list is always one long press away, even when a picker does open but shows nothing.
-        binding.btnPickVideo.setOnLongClickListener {
-            openBuiltInBrowser()
-            true
+            // v4.3: a short press opens the launcher's own folder browser. The unit's own picker
+            // (the one that shows only LOCAL > Ts) is a secondary button inside it — handing the
+            // job to that picker first is what kept the user out of the folder their file is in.
+            openBootFileBrowser()
         }
         binding.btnResetVideo.setOnClickListener {
             settings.introVideoUri = null
@@ -271,23 +279,85 @@ class SettingsActivity : ScaledActivity() {
         }.start()
     }
 
-    /** Lists the media on this unit with the launcher's own browser (v4.2). */
-    private fun openBuiltInBrowser() {
-        val missing = mediaPermissions().filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-        if (missing.isNotEmpty()) {
-            mediaPermission.launch(missing.toTypedArray())
-            return
-        }
-        showBuiltInMediaBrowser()
+    /** Short press of the pick button: the launcher's own folder browser (v4.3). */
+    private fun openBootFileBrowser() {
+        // v4.3: the folder browser needs whole-storage access to walk every folder. Without it the
+        // list still opens, it just cannot read some of them.
+        ensureStorageAccess { showBootFileBrowser() }
     }
 
-    /** `READ_MEDIA_*` from Android 13, the legacy storage permission before it. */
-    private fun mediaPermissions(): List<String> = if (Build.VERSION.SDK_INT >= 33) {
-        listOf(Manifest.permission.READ_MEDIA_VIDEO, Manifest.permission.READ_MEDIA_IMAGES)
-    } else {
-        listOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+    /** The launcher's own tree browser — the primary way to pick a boot video or picture. */
+    private fun showBootFileBrowser() {
+        BootFileBrowser(
+            this,
+            onPick = { uri -> importIntroMedia(uri) },
+            onSystemPicker = { openSystemPicker() },
+            onSearch = { showBuiltInMediaBrowser() }
+        ).show()
+    }
+
+    /** The unit's own picker, kept as a secondary button in the browser dialog. */
+    private fun openSystemPicker() {
+        val opened = BootMediaPicker.launch { intent -> pickIntroMedia.launch(intent) }
+        if (!opened) toast("이 기기에는 시스템 사진/동영상 선택기가 없습니다")
+    }
+
+    /**
+     * v4.3: whole-storage access, so the tree browser can show every folder a file could be in.
+     * The SystemUID build runs as `android.uid.system` and reads everything already, so it goes
+     * straight on. Otherwise "모든 파일 접근" is offered, and declining still opens the browser.
+     */
+    private fun ensureStorageAccess(then: () -> Unit) {
+        if (Privileges.isSystemUid()) {
+            then()
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (Environment.isExternalStorageManager()) {
+                then()
+                return
+            }
+            AlertDialog.Builder(this)
+                .setTitle("저장소 전체 접근")
+                .setMessage(
+                    "부팅 동영상은 어느 폴더에나 있을 수 있습니다.\n" +
+                        "'모든 파일 접근'을 허용하면 기기의 모든 폴더를 볼 수 있고, " +
+                        "허용하지 않으면 일부 폴더만 보입니다."
+                )
+                .setPositiveButton("권한 설정 열기") { _, _ -> openAllFilesSettings() }
+                .setNeutralButton("그냥 둘러보기") { _, _ -> then() }
+                .setNegativeButton("취소", null)
+                .show()
+            return
+        }
+        val permission = Manifest.permission.READ_EXTERNAL_STORAGE
+        if (ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED) {
+            then()
+            return
+        }
+        pendingAfterPermission = then
+        mediaPermission.launch(arrayOf(permission))
+    }
+
+    private fun openAllFilesSettings() {
+        val intents = listOf(
+            Intent(
+                AndroidSettings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                Uri.parse("package:$packageName")
+            ),
+            Intent(AndroidSettings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+        )
+        for (intent in intents) {
+            try {
+                waitingStorageReturn = true
+                startActivity(intent)
+                return
+            } catch (e: Exception) {
+                // Try the next form (an older firmware only has the global screen).
+            }
+        }
+        waitingStorageReturn = false
+        toast("저장소 권한 설정 화면을 열 수 없습니다")
     }
 
     /**
