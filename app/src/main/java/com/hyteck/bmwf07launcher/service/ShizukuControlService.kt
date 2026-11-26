@@ -183,19 +183,20 @@ class ShizukuControlService : IShizukuControl.Stub() {
                         val id = display.display.displayId
                         displays[id] = display
                         WindowService.dontOverrideDisplayInfo(id)
-                        // v4.1: surface first, size after it (CarCar's order); the other way
-                        // round can leave the output and the display on different sizes.
-                        if (surface != null) {
-                            try {
-                                display.surface = surface
-                            } catch (t: Throwable) {
-                                // The launcher reattaches its surface on the next callback.
-                            }
-                        }
+                        // v4.2: v4.0's order again — the rectangle first, the output surface
+                        // last. v4.1 swapped the two and both panes stopped drawing on the car
+                        // unit, so the order the pane engine was proven with is kept here too.
                         try {
                             display.resize(width, height, dpi)
                         } catch (t: Throwable) {
                             // Optional: the size is already the requested one.
+                        }
+                        if (surface != null) {
+                            try {
+                                display.surface = surface
+                            } catch (t: Throwable) {
+                                // The launcher reattaches its surface on the next pass.
+                            }
                         }
                         return@onDisplayThread id
                     }

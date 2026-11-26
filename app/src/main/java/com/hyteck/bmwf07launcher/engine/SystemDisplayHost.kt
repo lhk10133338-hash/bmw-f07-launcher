@@ -16,11 +16,17 @@ import android.view.Surface
  *     OWN_DISPLAY_GROUP`. `TRUSTED` is what allows another app's activity to be started on the
  *     display; `OWN_DISPLAY_GROUP` keeps the pane out of the main screen's display group.
  *  3. `IWindowManager.dontOverrideDisplayInfo(displayId)` — the firmware keeps our metrics.
- *  4. `setSurface(surface)` then `VirtualDisplay.resize(w, h, dpi)` — the exact pane rectangle,
- *     in that order (v4.1: CarCar's `setSurface` → `resize`, see `La8/c0`.b).
+ *  4. `VirtualDisplay.resize(w, h, dpi)`, then `setSurface(surface)` — **v4.0's order, which is
+ *     what actually puts a picture on this unit's panes.** v4.1 swapped it (surface first, size
+ *     after) and both panes went blank; see [VirtualDisplayEngine]'s header.
  *  5. A hidden pane is frozen with `VirtualDisplay.setDisplayState(false)` instead of being
- *     released, so its app survives a trip to fullscreen and back; a shown pane is turned on
- *     with `setDisplayState(true)`.
+ *     released, so its app survives a trip to fullscreen and back. That fullscreen toggle is the
+ *     only place the display state is touched (v4.1 also forced `setDisplayState(true)` on create
+ *     and on every resume, and the panes stopped drawing).
+ *
+ * On the car unit the launcher process runs as the platform UID, so no helper is involved: this
+ * host is created in-process by [VirtualDisplayEngine.hostFor] when
+ * [Privileges.canCreateTrustedDisplay] is true.
  */
 class SystemDisplayHost(private val displayManager: DisplayManager) : DisplayHost {
 
@@ -41,12 +47,10 @@ class SystemDisplayHost(private val displayManager: DisplayManager) : DisplayHos
             }
             displays[id] = created
             WindowService.dontOverrideDisplayInfo(id)
-            // v4.1: the output surface is attached first and the size applied after it, the same
-            // order CarCar uses (`La8/c0`.b: setSurface → resize). Doing it the other way round
-            // left the pane's surface and its display on different sizes.
-            runCatching { created.surface = surface }
+            // v4.2: v4.0's order, unchanged. The rectangle is fixed first and the output surface
+            // is attached last, so the display never sits on the size it was created with.
             runCatching { created.resize(width, height, dpi) }
-            WindowService.dontOverrideDisplayInfo(id)
+            runCatching { created.surface = surface }
             return id
         }
         return -1
@@ -54,7 +58,7 @@ class SystemDisplayHost(private val displayManager: DisplayManager) : DisplayHos
 
     override fun resize(displayId: Int, width: Int, height: Int, dpi: Int): Boolean {
         val display = displays[displayId] ?: return false
-        // A display the platform already removed cannot be resized; the engine rebuilds it.
+        // A display the platform already removed cannot be resized.
         if (display.display == null) return false
         return try {
             display.resize(width, height, dpi)
@@ -69,11 +73,11 @@ class SystemDisplayHost(private val displayManager: DisplayManager) : DisplayHos
         val display = displays[displayId] ?: return
         if (display.display == null) return
         try {
-            // The same Surface object is a no-op on the platform side, so re-attaching it after
-            // a resize costs nothing and puts a swapped surface back in one step.
+            // The same Surface object is a no-op on the platform side (`VirtualDisplay.setSurface`
+            // returns early when the surface is unchanged), so re-attaching it costs nothing.
             display.surface = surface
         } catch (t: Throwable) {
-            // A dead display is rebuilt by the engine.
+            // A refused surface is retried by the next pass of the engine.
         }
     }
 

@@ -102,6 +102,10 @@
     <string name="intro_builtin">기본 M 인트로</string>
     <string name="intro_video_none">지정 안 함 · 로고 없이 바로 시작</string>
     <string name="intro_video_selected">부팅 로고: %1$s</string>
+    <string name="intro_browser_title">부팅 로고 파일 선택</string>
+    <string name="intro_browser_cancel">취소</string>
+    <string name="intro_browser_again">다시 찾기</string>
+    <string name="intro_browser_empty">이 기기에서 동영상·사진 파일을 찾지 못했습니다.\n\nUSB로 연결해 Download 폴더에 mp4(jpg/png) 파일을 넣은 뒤 ‘다시 찾기’를 눌러 주세요.\n찾는 위치: Download · Movies · Pictures · DCIM · Music</string>
 
     <string name="btn_import_defaults">BMW 추천 6종 프리셋 불러오기</string>
     <string name="imported">프리셋 %1$d개를 독에 넣었습니다</string>

@@ -5,6 +5,22 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!--
+      v4.2: storage access for the boot video/picture picker. The document picker this app asks
+      for first is missing on many head units (and the SystemUID build runs as UID system, which
+      some firmware refuses to hand OPEN_DOCUMENT to), so the launcher lists the media itself from
+      the gallery index and from Download / Movies / Pictures / DCIM. READ_MEDIA_* is granted at
+      install on the SystemUID build; on the standard build the usual runtime prompt appears.
+    -->
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+
+    <!--
       v4.0: the permissions CarCar Launcher holds through its platform signature. They are *
       declared here so the SystemUID build (sharedUserId="android.uid.system") is granted them,
       and so the standard build can report them as unavailable and fall back to Shizuku. A normal

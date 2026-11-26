@@ -1,8 +1,11 @@
 package com.hyteck.bmwf07launcher
 
+import android.Manifest
+import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings as AndroidSettings
 import android.widget.EditText
@@ -11,6 +14,7 @@ import android.widget.SeekBar
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
+import androidx.core.content.ContextCompat
 import com.hyteck.bmwf07launcher.data.AppRepository
 import com.hyteck.bmwf07launcher.data.Preset
 import com.hyteck.bmwf07launcher.data.Settings
@@ -21,6 +25,7 @@ import com.hyteck.bmwf07launcher.databinding.ItemPresetEditBinding
 import com.hyteck.bmwf07launcher.service.LauncherAccessibilityService
 import com.hyteck.bmwf07launcher.shizuku.ShizukuBridge
 import com.hyteck.bmwf07launcher.ui.AppPickerDialog
+import com.hyteck.bmwf07launcher.util.BootMediaPicker
 import com.hyteck.bmwf07launcher.util.applyImmersive
 import com.hyteck.bmwf07launcher.util.dp
 import com.hyteck.bmwf07launcher.util.toast
@@ -56,42 +61,29 @@ class SettingsActivity : ScaledActivity() {
     /** UI scale this screen was built with, so the screen knows when it has to be rebuilt. */
     private var appliedScale = 0
 
+    /**
+     * v4.2: whatever picker the unit answered with (`OPEN_DOCUMENT`, `GET_CONTENT` or a gallery
+     * `PICK`) lands here. The file is copied into app storage right away: the boot logo plays
+     * before any URI grant exists, so a `content://` handle alone would be gone by the next boot.
+     */
     private val pickIntroMedia =
-        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-            if (uri != null) {
-                try {
-                    contentResolver.takePersistableUriPermission(
-                        uri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION
-                    )
-                } catch (ignored: SecurityException) {
-                    // Some document providers do not offer persistable access.
-                }
-                // v3.2: a picture is a valid intro too, so the MIME type is remembered next to the
-                // URI and the launcher knows whether to decode an image or play a video.
-                settings.introVideoUri = uri.toString()
-                settings.introMediaType = resolveMediaType(uri)
-                settings.introBuiltin = false
-                updateVideoName()
-                toast(
-                    if (isImageType(settings.introMediaType)) "인트로 사진을 지정했습니다"
-                    else "인트로 동영상을 지정했습니다"
-                )
-            }
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
+            val data = result.data ?: return@registerForActivityResult
+            val uri = data.data
+                ?: data.clipData?.let { if (it.itemCount > 0) it.getItemAt(0).uri else null }
+                ?: return@registerForActivityResult
+            importIntroMedia(uri)
         }
 
-    /** MIME type of a picked document, from the provider or, failing that, from its name. */
-    private fun resolveMediaType(uri: Uri): String {
-        val fromProvider = try {
-            contentResolver.getType(uri)
-        } catch (e: Exception) {
-            null
+    /**
+     * Storage access the built-in browser needs to list media. On the SystemUID build these are
+     * already granted; on the standard build the answer only decides how much the list can see.
+     */
+    private val mediaPermission =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+            showBuiltInMediaBrowser()
         }
-        if (fromProvider != null) return fromProvider
-        val name = (uri.lastPathSegment ?: uri.toString()).lowercase()
-        val images = listOf("jpg", "jpeg", "png", "webp", "bmp", "gif", "heic", "heif")
-        return if (images.any { name.endsWith(".$it") }) "image/*" else "video/*"
-    }
 
     private fun isImageType(type: String?): Boolean = type?.startsWith("image") == true
 
@@ -185,12 +177,19 @@ class SettingsActivity : ScaledActivity() {
             settings.introSkipOnReturn = checked
         }
         binding.btnPickVideo.setOnClickListener {
-            try {
-                // Both kinds of media: the launcher shows a picture for ~2.5 s or plays a video.
-                pickIntroMedia.launch(arrayOf("video/*", "image/*"))
-            } catch (e: Exception) {
-                toast("사진/동영상 선택기를 열 수 없습니다")
+            // v4.2: OPEN_DOCUMENT → GET_CONTENT → gallery PICK, and, when this unit has no picker
+            // at all (many head units ship without DocumentsUI, and the SystemUID build runs as
+            // UID system), the launcher's own list of media files.
+            val opened = BootMediaPicker.launch { intent -> pickIntroMedia.launch(intent) }
+            if (!opened) {
+                toast("이 기기에는 사진/동영상 선택기가 없어 목록에서 고릅니다")
+                openBuiltInBrowser()
             }
+        }
+        // The list is always one long press away, even when a picker does open but shows nothing.
+        binding.btnPickVideo.setOnLongClickListener {
+            openBuiltInBrowser()
+            true
         }
         binding.btnResetVideo.setOnClickListener {
             settings.introVideoUri = null
@@ -240,6 +239,93 @@ class SettingsActivity : ScaledActivity() {
             }
             binding.tvVideoName.text = getString(R.string.intro_video_selected, name)
         }
+    }
+
+    /**
+     * Copies the picked file into the app's own storage and makes it the boot logo (v4.2).
+     *
+     * The copy runs off the main thread because a chosen video can be tens of megabytes; the
+     * settings are written back on the main thread once the file is there.
+     */
+    private fun importIntroMedia(uri: Uri) {
+        toast("부팅 로고 파일을 복사하고 있습니다…")
+        Thread {
+            val file = BootMediaPicker.copyIn(this, uri, "boot-logo")
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (file == null) {
+                    toast("선택한 파일을 읽을 수 없습니다. 다른 파일을 골라 주세요")
+                    return@runOnUiThread
+                }
+                // v3.2: a picture is a valid intro too, so the MIME type is remembered next to the
+                // URI and the launcher knows whether to decode an image or play a video.
+                settings.introVideoUri = Uri.fromFile(file).toString()
+                settings.introMediaType = BootMediaPicker.mediaTypeOf(file.name)
+                settings.introBuiltin = false
+                updateVideoName()
+                toast(
+                    if (isImageType(settings.introMediaType)) "인트로 사진으로 지정했습니다"
+                    else "인트로 동영상으로 지정했습니다"
+                )
+            }
+        }.start()
+    }
+
+    /** Lists the media on this unit with the launcher's own browser (v4.2). */
+    private fun openBuiltInBrowser() {
+        val missing = mediaPermissions().filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isNotEmpty()) {
+            mediaPermission.launch(missing.toTypedArray())
+            return
+        }
+        showBuiltInMediaBrowser()
+    }
+
+    /** `READ_MEDIA_*` from Android 13, the legacy storage permission before it. */
+    private fun mediaPermissions(): List<String> = if (Build.VERSION.SDK_INT >= 33) {
+        listOf(Manifest.permission.READ_MEDIA_VIDEO, Manifest.permission.READ_MEDIA_IMAGES)
+    } else {
+        listOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+    }
+
+    /**
+     * The fallback for a unit without a picker: every video and picture the launcher can reach,
+     * from the gallery's MediaStore index and from Download / Movies / Pictures / DCIM, listed in
+     * one dialog. The scan runs on a worker thread, so a large DCIM folder cannot freeze the
+     * settings screen.
+     */
+    private fun showBuiltInMediaBrowser() {
+        toast("미디어 파일을 찾고 있습니다…")
+        Thread {
+            val items = BootMediaPicker.scan(this)
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (items.isEmpty()) {
+                    showNoMediaHint()
+                    return@runOnUiThread
+                }
+                val labels = items.map { it.label() }.toTypedArray()
+                AlertDialog.Builder(this)
+                    .setTitle(getString(R.string.intro_browser_title))
+                    .setItems(labels) { _, which -> importIntroMedia(items[which].uri) }
+                    .setNegativeButton(getString(R.string.intro_browser_cancel), null)
+                    .show()
+            }
+        }.start()
+    }
+
+    /** Nothing found: says where to put the file, and offers to look again. */
+    private fun showNoMediaHint() {
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.intro_browser_title))
+            .setMessage(getString(R.string.intro_browser_empty))
+            .setPositiveButton(getString(R.string.intro_browser_again)) { _, _ ->
+                showBuiltInMediaBrowser()
+            }
+            .setNegativeButton(getString(R.string.intro_browser_cancel), null)
+            .show()
     }
 
     // ---------------------------------------------------------------- engine

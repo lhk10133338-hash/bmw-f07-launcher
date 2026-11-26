@@ -1,4 +1,4 @@
-# BMW MN-Launcher 4.1
+# BMW MN-Launcher 4.2
 
 BMW F07 2016 530d xDrive 5GT + MEKEDE MN-L (Android 14, 2560×720 울트라와이드) 전용
 개인용 홈 런처입니다. Kotlin + Android SDK만 사용하며 네이티브 라이브러리(.so)가 없어
@@ -6,43 +6,54 @@ ARM64 실기기와 x86_64 에뮬레이터(LD플레이어 등) 모두에서 설�
 
 2.0은 CarCar Launcher(카카런처)의 실사용 구조를 기준으로 화면을 다시 만들었고,
 4.0은 그 **가상화면 엔진을 원본 APK에서 분석해 이식**하고 이름·시작 화면·여백·테마를 개편한 버전입니다.
-4.1은 실차에서 **비율을 바꾸면 왼쪽 창이 까맣게 굳던 문제**를 원본 리사이즈 순서에 맞춰 고친 버전입니다.
+4.1은 비율 변경 시 왼쪽 창이 까맣게 굳는 문제를 고치려 했지만 **양쪽 창이 모두 안 나오게 됐고**,
+4.2는 **4.1의 회귀를 되돌려 4.0의 출력 경로를 복원**한 뒤 4.0에서 실제로 문제였던 두 가지만 고친 버전입니다.
+부팅 동영상·사진 선택기가 없던 기기 문제도 함께 고쳤습니다.
 상단 바·하단 바를 없애고 **화면 전체를 두 개의 분할 창**, 왼쪽에 **56dp 슬림 독**만 남겼습니다.
 
-## 4.1 — 비율 변경 시 창이 까맣게 굳는 문제 수정
+## 4.2 — v4.1 회귀 되돌림 · 왼쪽 창 리사이즈 · 부팅 로고 선택기
 
-증상(2026-11-26, 실차 MEKEDE MN-L): `BMW-MN-Launcher-SystemUID.apk`로 분할은 정상인데
-**화면 비율을 바꾸면 왼쪽 창이 까만 화면으로 바뀌고 돌아오지 않음. 오른쪽 창은 정상.**
+### 증상 정리 (실차 MEKEDE MN-L, 2026-11-26)
+- v4.0(`62249b1`): 오른쪽 창 정상. 비율을 바꾸면 **왼쪽 창만 까맣게 굳음**.
+- v4.1(`a97f67d`→`e820f19`): 설치 후 **양쪽 창 모두 아무것도 안 나옴**.
+- 설정에서 부팅 동영상·사진을 고르면 **"선택기를 열 수 없습니다"**.
 
-### 원인
-1. `VirtualDisplayEngine.sync()`가 리사이즈마다 `SurfaceHolder.setFixedSize(w, h)`를 불렀습니다.
-   이 호출은 `SurfaceView`의 버퍼 크기를 **고정**해 버려서, 이후 레이아웃이 바뀌어도 버퍼가 뷰를
-   따라가지 않고, `SurfaceView`가 자기 표면 갱신 중에 부르는 콜백(`surfaceChanged`) **안에서**
-   다시 표면 갱신을 재진입시켜 표면과 가상화면이 서로 다른 크기에 묶여 버렸습니다.
-2. `surfaceChanged` 콜백 안에서 동기적으로 `resize()`를 호출했습니다(같은 재진입 문제).
-3. 표면이 사라질 때마다 `setSurface(null)`로 **출력 표면을 떼어냈습니다.** 원본은 이 순서를
-   쓰지 않으며, 출력이 떨어져 나간 창은 다시 붙여도 화면이 돌아오지 않습니다.
-4. 리사이즈 결과를 **확인하지 않았습니다.** 플랫폼이 화면을 제거했거나 다른 크기를 유지해도
-   엔진은 성공한 것으로 간주해 까만 창을 그대로 두었습니다.
+### v4.1이 왜 양쪽 다 지웠나 (v4.0 대비 바뀐 것만)
+| v4.1이 바꾼 것 | 왜 창을 못 보이게 하는가 | v4.2 |
+|---|---|---|
+| `displayManager.getDisplay(existing) == null`이면 그 창을 `release` + 재생성 | AOSP `DisplayManagerService.getDisplayInfoInternal`은 `info.hasAccess(uid)` 또는 `isUidPresentOnDisplayInternal(uid, displayId)`일 때만 정보를 줍니다. 우리 창은 `OWN_DISPLAY_GROUP`(자기 디스플레이 그룹)이고 런처 자신은 그 화면 위에 창을 두지 않으므로, 펌웨어가 이 조건을 만족시키지 않으면 `getDisplay()`는 null입니다. 그러면 1.5초 스로틀마다 두 창을 모두 버리고 다시 만들고, `DESTROY_CONTENT_ON_REMOVAL` 때문에 재생성 때마다 그 화면의 앱까지 사라져 **영원히 까만 화면**이 됩니다. | 제거. 화면이 목록에 없다는 것은 "그리지 않는다"는 증거가 아닙니다. |
+| `verify()`: 400ms 뒤 `getRealSize()`를 읽어 다르면 표면 재연결, 화면이 null이면 즉시 `drop` | 만든 창을 400ms 뒤 스스로 부수는 같은 문제. 위 항목과 겹쳐 "만들자마자 사라지는" 루프가 됩니다. | 로그만 남기고, 실제로 크기가 어긋난 경우에만 `resize` 1회 재적용(`drop`·`setSurface` 없음). |
+| 생성 직후·`resume`마다 `setDisplayState(true)` | AOSP에서 이 호출은 장치의 `mIsDisplayOn`을 바꾸고 `DisplayDeviceInfo`를 무효화해 CHANGED 이벤트를 보냅니다. 생성 직후의 상태 변경은 펌웨어가 그 화면의 logical display를 다시 계산하게 만들 수 있습니다. v4.0은 한 번도 부르지 않고 오른쪽 창을 정상 출력했습니다. | 생성/리사이즈 경로에서 제거. 전체화면 freeze(`setPaneVisible`)에서만 사용. |
+| 생성 시 `setSurface` → `resize` 순서로 교체 (원본 `La8/c0.b`를 따른 것) | 원본의 그 경로는 Flutter 텍스처 producer를 쓰는 다른 구현이고, 우리 네이티브 `SurfaceView` 경로에서 검증된 순서는 v4.0의 `resize` → `setSurface`입니다. | v4.0 순서로 복원(`SystemDisplayHost.create`, `ShizukuControlService.createDisplay`). |
+| `SurfaceHolder.setFixedSize` 완전 제거 | v4.0은 이 호출로 창 버퍼를 창 사각형에 맞춰 두고 정상 출력했습니다. 제거하면 버퍼 크기를 뷰 레이아웃에만 맡기게 되어, 이 펌웨어에서 v4.0이 만들던 "버퍼 = 표시 크기" 조건이 사라집니다. | 되살리되 **스케줄된 패스에서, 사각형이 실제로 바뀔 때만 1회** 부릅니다. |
 
-### 원본에서 확인한 리사이즈 순서 (`dexdump -d`)
-`La8/c0`.b(크기 변경 진입): 크기가 실제로 다를 때만 → 새 출력 표면 얻기 → `setSize(w,h)` →
-**`setSurface(surface)` (표면 먼저)** → **`VirtualDisplay.resize(w, h, dpi)` (크기 나중)**.
-`Lw7/g`.l(생성): `createVirtualDisplay(..., null, 0x109)` → 컨테이너 레이어를 `SurfaceView`의
-`SurfaceControl` 자식으로 붙이고 `IWindowSession.reparentDisplayContent`로 화면 콘텐츠를 그 레이어에
-합성 → `dontOverrideDisplayInfo`. `Lw7/g`.g(보이기): `setDisplayState(true)` → `m()`·`o()`(지오메트리).
-즉 원본은 **표면을 먼저 붙이고 크기를 나중에 적용**하며, 숨김은 `setDisplayState(false)` freeze입니다.
+### v4.0에서 실제로 문제였던 두 가지 (v4.2가 고친 것)
+1. **표면 콜백 안에서 표시 장치를 만졌습니다.** v4.0은 `surfaceChanged` 안에서 곧바로
+   `setFixedSize`/`resize`를 호출했습니다. `SurfaceView`가 자기 표면을 갱신하는 도중에 그 표면의
+   버퍼 크기를 다시 잡는 셈이라, 실차에서 **왼쪽 창이 비율 변경 뒤 굳었습니다**(오른쪽은 정상).
+   v4.2는 콜백에서 **스케줄만** 하고, 실제 작업은 메인 루퍼의 다음 패스에서 합니다.
+2. **출력 표면을 떼어냈습니다.** v4.0은 `surfaceDestroyed`에서 `setSurface(null)`을 불렀습니다.
+   플랫폼 문서상 가상 화면의 출력 표면을 떼는 것은 "화면을 끄는 것"과 같고,
+   `DESTROY_CONTENT_ON_REMOVAL`과 만나면 그 화면의 앱까지 정리되어 **다시 붙여도 돌아오지 않습니다**.
+   v4.2는 표면이 사라져도 표시 장치와 앱을 그대로 두고, 새 표면이 오면 교체만 합니다.
 
-### 수정 (VirtualDisplayEngine · SystemDisplayHost · DisplayHost · ShizukuControlService)
-- `setFixedSize` **완전 제거** — `SurfaceView`는 `match_parent`라 프레임워크가 버퍼를 창 크기에 맞춥니다.
-- `surfaceChanged`/`surfaceDestroyed`는 **스케줄만** 합니다(표면 갱신 재진입 없음).
-- 표면이 사라져도 **출력 표면을 떼지 않습니다**(`setSurface(null)` 금지). 새 표면이 오면 교체만 합니다.
-- 리사이즈 순서를 원본과 같이 **`setSurface` → `resize` → `dontOverrideDisplayInfo` → `setDisplayState(true)`**로 통일.
-- 생성 직후·리사이즈 후 `setDisplayState(true)`로 창을 켜 둡니다(원본 `e()`와 동일).
-- 리사이즈 400ms 뒤 **실제 화면 크기를 다시 읽어** 확인하고, 다르면 표면 재연결 + 크기 재적용을 최대 2회,
-  화면 자체가 사라졌으면 그 창만 새로 만들어 앱을 `REORDER_TO_FRONT`로 되돌립니다(앱 데이터 손실 최소화).
-  새 크기가 이미 들어온 경우에는 이 확인 작업이 끼어들지 않습니다.
-- `SystemDisplayHost.resize`·`LocalDisplayHost.resize`는 `display.display == null`인 죽은 화면을 실패로 보고합니다.
+그 밖에: 화면 재생성은 `resize`가 **연속 2회 거부**될 때만(그때는 앱이 이미 그 화면에서 사라진 상태),
+진단용으로 `MNLauncher` 태그에 창 생성·리사이즈·표면 소멸·크기 리포트를 로그로 남깁니다.
+
+### 부팅 로고 선택기 (v4.2)
+증상: "사진/동영상 선택기를 열 수 없습니다". 원인은 `ActivityResultContracts.OpenDocument()`가
+`ACTION_OPEN_DOCUMENT` **하나만** 시도한 것입니다. 이 기기에는 `DocumentsUI`가 없거나,
+`android.uid.system`으로 도는 SystemUID 빌드의 호출을 펌웨어가 거부해 `ActivityNotFoundException`이 났습니다.
+
+- `BootMediaPicker.launch`가 `ACTION_OPEN_DOCUMENT` → `ACTION_GET_CONTENT`(`*/*` + video/image) →
+  `ACTION_PICK`(동영상, 사진) 순으로 시도합니다.
+- 전부 실패하면 **런처 내장 목록**: 갤러리 MediaStore의 동영상·사진 + `Download·Movies·Pictures·DCIM·Music`
+  폴더 직접 스캔(mp4·mkv·webm·3gp·avi·mov·m4v / jpg·jpeg·png·webp·bmp·gif·heic)을 한 다이얼로그로 보여 줍니다.
+  선택 버튼을 **길게 누르면** 언제든 이 목록이 열립니다(선택기는 열리는데 아무것도 안 보이는 기기용).
+- 고른 파일은 앱 전용 저장소(`files/intro/`)로 **복사**합니다. 부팅 로고는 어떤 URI 권한도 없는
+  부팅 시점에 재생되어야 하므로 `content://` 핸들만으로는 다음 부팅에서 사라집니다.
+- 매니페스트에 `READ_MEDIA_VIDEO`, `READ_MEDIA_IMAGES`, `READ_EXTERNAL_STORAGE`(≤32),
+  `MANAGE_EXTERNAL_STORAGE` 추가 — SystemUID 빌드는 설치 시, 표준 빌드는 실행 시 부여됩니다.
 
 ## 4.0 — 카카런처 가상화면 엔진 이식 · 이름/부팅로고/여백/테마 개편
 
