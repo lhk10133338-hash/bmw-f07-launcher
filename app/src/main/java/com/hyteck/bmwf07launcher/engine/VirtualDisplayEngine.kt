@@ -29,44 +29,50 @@ import kotlin.math.abs
  *
  * ## Which version this is
  *
- * v4.3. It is **v4.0's output path** (the only one that has ever shown a picture on the car unit)
- * plus the fixes v4.0 actually needed. Everything v4.1 added around the display's lifetime —
+ * v4.4. It is **v4.0's output path** (the only one that has ever shown a picture on the car unit)
+ * with the buffer pinning taken out. Everything v4.1 added around the display's lifetime —
  * `setDisplayState` on create/resume, rebuilding a display because `DisplayManager.getDisplay()`
- * did not list it, and the 400 ms re-apply loop — is gone: v4.0 put a picture on the right pane for
- * a whole session with none of it, and v4.1 stopped showing anything at all after adding it.
+ * did not list it, and the 400 ms re-apply loop — stays gone: v4.0 put a picture on the right pane
+ * for a whole session with none of it, and v4.1 stopped showing anything at all after adding it.
  *
- * ## What v4.3 fixes (both panes black on the car unit, 2026-11-26)
+ * ## What v4.4 fixes (a ratio change blackened both panes, 2026-11-26)
  *
- *  1. **`setFixedSize` no longer feeds its own dead surface to the display.** v4.2 pinned the
- *     buffer and, in the very same pass, called `create`/`setSurface`/`resize` with the surface
- *     that `setFixedSize` had just scheduled for destruction: a `SurfaceView` throws the current
- *     Surface away and builds another one asynchronously (`surfaceDestroyed` → `surfaceCreated`),
- *     so the display was handed a surface that died one frame later — a black pane. Now the
- *     buffer is pinned only when its `surfaceFrame` really has another size, and after a pin the
- *     pass **ends**: the next scheduled pass runs with the new, stable surface.
- *  2. **A failed route says so on screen.** If the platform privilege behind the trusted display
- *     is missing, or `create`/the app launch fails, a short status line appears over the pane
- *     (a toast alone vanishes before anyone can read it in a car) and the reason is logged. A
- *     healthy pane never shows it.
+ * On the car unit a freshly booted launcher drew **both** panes, and the moment the split ratio was
+ * dragged, **both** of them went black. The only thing a ratio change added was
+ * [SurfaceHolder.setFixedSize]: at the boot ratio (50:50) a pane's `surfaceFrame` already equals its
+ * view rectangle, so the pin was skipped and the picture came up; as soon as the ratio moved, the
+ * pin ran, the view threw its Surface away and built another one asynchronously
+ * (`surfaceDestroyed` → `surfaceCreated`), and the display was left pointing at the dead one. The
+ * original CarCar launcher never calls `setFixedSize` either. It is now gone from this engine
+ * altogether, together with the `pinned`/`pinTries` bookkeeping that existed only to decide when to
+ * call it.
+ *
+ * That call is not needed: a `match_parent` `SurfaceView` has its buffer resized by the framework on
+ * every layout and reports the new size through `surfaceChanged`. A ratio change therefore does the
+ * two things the platform does need — [DisplayHost.setSurface] when the surface object itself is new,
+ * then [DisplayHost.resize] to the pane rectangle at the pane's density — and nothing else.
  *
  * ## What v4.0 does (kept)
  *
- *  1. The pane buffer is pinned to the pane rectangle with [SurfaceHolder.setFixedSize], then the
- *     display is created/resized to the same rectangle. Buffer and display stay on one size.
+ *  1. The display is created/resized to the pane rectangle the SurfaceView was laid out to, at the
+ *     pane's density.
  *  2. A ratio change only resizes the display; the display and the app on it are never released.
  *     The app gets an ordinary configuration change instead of being started again.
  *  3. On create the size is applied first and the output surface last
  *     ([SystemDisplayHost.create]).
  *
- * ## What is kept from v4.2
+ * ## What is kept from v4.2/v4.3
  *
- *  1. **Nothing is done from inside a SurfaceView callback.** v4.0 called
- *     `setFixedSize`/`resize` synchronously from `surfaceChanged`, i.e. while the view was still
- *     updating its own surface; on the car unit that left the **left pane black for good** after
- *     a ratio change (user report 2026-11-26) while the right pane kept working. The callbacks now
- *     only schedule a pass on the main looper, and `setFixedSize` runs there, once per real size
- *     change.
- *  2. **A pane's output surface is never detached** with `setSurface(null)` while the pane lives.
+ *  1. **Nothing is done from inside a SurfaceView callback.** v4.0 called into the display
+ *     synchronously from `surfaceChanged`, i.e. while the view was still updating its own surface;
+ *     on the car unit that left the **left pane black for good** after a ratio change (user report
+ *     2026-11-26) while the right pane kept working. The callbacks now only schedule a pass on the
+ *     main looper.
+ *  2. **A failed route says so on screen** (v4.3). If the platform privilege behind the trusted
+ *     display is missing, or `create`/the app launch fails, a short status line appears over the
+ *     pane (a toast alone vanishes before anyone can read it in a car) and the reason is logged. A
+ *     healthy pane never shows it.
+ *  3. **A pane's output surface is never detached** with `setSurface(null)` while the pane lives.
  *     Detaching a virtual display's surface is "similar to turning off the screen" (platform
  *     documentation), and with `DESTROY_CONTENT_ON_REMOVAL` the platform throws the running app
  *     away with it — which is exactly how a pane that lost its surface once never came back.
@@ -108,14 +114,6 @@ class VirtualDisplayEngine(
     /** The rectangle the display was last asked for (v4.0's early-out check). */
     private val sizes = HashMap<Side, IntArray>()
 
-    /** The rectangle the SurfaceView's buffer was last pinned to. */
-    private val pinned = HashMap<Side, IntArray>()
-
-    /**
-     * [width, height, attempts] of the last `setFixedSize` try, so a buffer that does not take the
-     * pin is not re-pinned (and its surface not re-created) on every single pass.
-     */
-    private val pinTries = HashMap<Side, IntArray>()
 
     /** A one-line status over a pane, shown only when something actually failed (v4.3). */
     private val statusLabels = HashMap<Side, TextView>()
@@ -173,16 +171,15 @@ class VirtualDisplayEngine(
         view.holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(holder: SurfaceHolder) {
                 // v4.3: only schedule. The surface this callback announces is created inside
-                // SurfaceView's own update; the scheduled pass runs when it is complete and uses
-                // it there, the same rule `setFixedSize` follows below.
+                // SurfaceView's own update; the scheduled pass runs when it is complete and
+                // attaches it there.
                 scheduleSync()
             }
 
             /**
-             * v4.2: schedules only. Calling into the display (or `setFixedSize`) from here ran
-             * inside SurfaceView's own surface update — the re-entrancy that wedged the left pane
-             * on the car unit. The view has finished laying itself out by the time the scheduled
-             * pass runs.
+             * v4.2: schedules only. Calling into the display from here ran inside SurfaceView's
+             * own surface update — the re-entrancy that wedged the left pane on the car unit. The
+             * view has finished laying itself out by the time the scheduled pass runs.
              */
             override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
                 scheduleSync()
@@ -195,7 +192,6 @@ class VirtualDisplayEngine(
                 // a pane that hit this once never showed a picture again.
                 Log.i(TAG, "pane $side surface destroyed; keeping display ${displayIds[side]}")
                 surfaces.remove(side)
-                pinned.remove(side)
                 scheduleSync()
             }
         })
@@ -346,46 +342,18 @@ class VirtualDisplayEngine(
             val density = densityOf(side)
             val existing = displayIds[side]
             val record = sizes[side]
-            val pinnedSize = pinned[side]
-            val pinnedSame = pinnedSize != null && pinnedSize[0] == width && pinnedSize[1] == height
 
             if (existing != null && record != null &&
                 record[0] == width && record[1] == height && record[2] == density &&
-                surfaces[side] === surface && pinnedSame
+                surfaces[side] === surface
             ) {
                 return
             }
 
-            // 1) The pane's buffer must be the pane rectangle before the display is pointed at
-            //    it. Only a buffer that really has another size is pinned, and a pin always ends
-            //    this pass (v4.3).
-            if (!pinnedSame) {
-                val frame = holder.surfaceFrame
-                val frameSame = abs(frame.width() - width) <= SIZE_TOLERANCE &&
-                    abs(frame.height() - height) <= SIZE_TOLERANCE
-                if (frameSame) {
-                    // The SurfaceView is already the pane rectangle (it is `match_parent`, so this
-                    // is the normal case). Pinning it again would only make the platform destroy
-                    // this surface and build another one — the v4.2 black pane. Just record it.
-                    pinned[side] = intArrayOf(width, height)
-                } else if (pinTriesFor(side, width, height) <= MAX_PIN_ATTEMPTS &&
-                    runCatching { holder.setFixedSize(width, height) }.isSuccess
-                ) {
-                    pinned[side] = intArrayOf(width, height)
-                    Log.i(TAG, "pane $side buffer pinned to ${width}x$height; waiting for the new surface")
-                    // v4.3 — the whole point: `setFixedSize` has just scheduled the current
-                    // Surface for destruction. Anything handed to the display from this pass (the
-                    // create below, `setSurface`, `resize`) would point it at that dead surface.
-                    // The new surface arrives through surfaceCreated/surfaceChanged, which
-                    // schedule the pass that continues with it.
-                    scheduleSync()
-                    return
-                } else {
-                    // Pinning did not take: use the surface the view actually has.
-                    pinned[side] = intArrayOf(width, height)
-                }
-            }
-
+            // v4.4: no `setFixedSize` anywhere. The pane is `match_parent`, so the framework has
+            // already given its buffer the pane rectangle and `surfaceChanged` has reported it; a
+            // pin here only made the view rebuild its Surface under the display's feet, which is
+            // exactly what blackened both panes when the ratio was dragged on the car unit.
             if (existing != null) {
                 // 2) The display is asked for the same rectangle. It keeps its app.
                 if (surfaces[side] !== surface) {
@@ -495,20 +463,6 @@ class VirtualDisplayEngine(
         scheduleReadBack(side, width, height, density, attempt + 1)
     }
 
-    /**
-     * The pane's next `setFixedSize` try for this rectangle: 1 the first time, then 2, 3… A new
-     * rectangle starts again at 1.
-     */
-    private fun pinTriesFor(side: Side, width: Int, height: Int): Int {
-        val record = pinTries[side]
-        if (record == null || record[0] != width || record[1] != height) {
-            pinTries[side] = intArrayOf(width, height, 1)
-            return 1
-        }
-        record[2] += 1
-        return record[2]
-    }
-
     private fun hostName(host: DisplayHost): String = when (host) {
         is SystemDisplayHost -> "플랫폼 권한 경로(TRUSTED)"
         is ShizukuDisplayHost -> "Shizuku(shell) 경로"
@@ -560,7 +514,6 @@ class VirtualDisplayEngine(
         hosts[side]?.release(displayId)
         surfaces.remove(side)
         sizes.remove(side)
-        pinned.remove(side)
     }
 
     private fun reportUnavailable() {
@@ -656,8 +609,6 @@ class VirtualDisplayEngine(
         surfaces.clear()
         hosts.clear()
         sizes.clear()
-        pinned.clear()
-        pinTries.clear()
         statusLabels.values.forEach { label -> (label.parent as? ViewGroup)?.removeView(label) }
         statusLabels.clear()
         packages.clear()
@@ -687,9 +638,6 @@ class VirtualDisplayEngine(
 
         /** Refusals in a row before a pane's display is rebuilt (it is not answering any more). */
         private const val MAX_RESIZE_FAILURES = 2
-
-        /** `setFixedSize` tries per pane rectangle before the surface the view has is used. */
-        private const val MAX_PIN_ATTEMPTS = 2
 
         /** The platform-signed build's application id suffix (see app/build.gradle.kts). */
         private const val SYSTEMUID_SUFFIX = ".systemuid"

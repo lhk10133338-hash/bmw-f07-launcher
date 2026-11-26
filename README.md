@@ -1,4 +1,4 @@
-# BMW MN-Launcher 4.3
+# BMW MN-Launcher 4.4
 
 BMW F07 2016 530d xDrive 5GT + MEKEDE MN-L (Android 14, 2560×720 울트라와이드) 전용
 개인용 홈 런처입니다. Kotlin + Android SDK만 사용하며 네이티브 라이브러리(.so)가 없어
@@ -10,6 +10,23 @@ ARM64 실기기와 x86_64 에뮬레이터(LD플레이어 등) 모두에서 설�
 4.2는 **4.1의 회귀를 되돌려 4.0의 출력 경로를 복원**한 뒤 4.0에서 실제로 문제였던 두 가지만 고친 버전입니다.
 부팅 동영상·사진 선택기가 없던 기기 문제도 함께 고쳤습니다.
 상단 바·하단 바를 없애고 **화면 전체를 두 개의 분할 창**, 왼쪽에 **56dp 슬림 독**만 남겼습니다.
+
+## 4.4 — `setFixedSize` 완전 제거 (비율 조정 시 양쪽 창 검정)
+
+실차 제보(2026-11-26): v4.3은 **처음 켰을 때 왼쪽·오른쪽 두 창 모두 정상 출력**되었고,
+**화면 비율을 조정하는 순간 두 창이 모두 까매졌습니다**.
+
+원인은 v4.3의 조건부 핀에 그대로 남아 있던 `setFixedSize`입니다.
+- 부팅 직후 50:50에서는 `surfaceFrame == width × height`라서 **핀을 건너뛰었고 → 두 창 정상**.
+- 비율을 움직이는 순간 `surfaceFrame != width × height`가 되어 **`holder.setFixedSize(w,h)`가 호출**되고,
+  `SurfaceView`가 표면을 파괴·재생성하는 사이에 표시 장치가 죽은 표면을 가리켜 **양쪽 창이 검게** 되었습니다.
+  (원본 카카런처도 이 호출을 하지 않습니다.)
+
+v4.4는 **엔진에서 `setFixedSize` 호출과 `pinned`/`pinAttempts` 로직을 완전히 삭제**했습니다.
+`match_parent` SurfaceView는 레이아웃이 바뀌면 프레임워크가 버퍼 크기를 스스로 맞추고 `surfaceChanged`로 알려 주므로,
+비율 변경 경로는 이제 **표면 객체가 바뀐 경우 `host.setSurface(existing, surface)` + `host.resize(existing, w, h, dpi)`** 만 합니다.
+표면이 잠깐 사라졌다 돌아오면(`surfaceDestroyed → surfaceCreated`) 새 표면을 `attachSurface`로 다시 붙이고,
+표시 장치는 그대로 두므로 앱이 재시작되지 않습니다.
 
 ## 4.3 — 표면 타이밍 수정(양쪽 창 검정) · 런처 자체 폴더 탐색기
 
@@ -315,7 +332,7 @@ v2.1에서 `네이버지도`·`QQ음악HD`가 `응답하지 않음` 후 꺼진 �
   Dialog는 별도 창이라 자유창 앱(네이버지도)에 가려졌고, 화면 가운데에 걸쳐 떴습니다. 지금은 누른 창 안에서만 뜨고,
   2:8 좁은 창에서는 한 줄 버튼·작은 글자·패키지명 숨김으로 자동 전환됩니다.
 - **양쪽 창이 함께 리사이즈**: 시스템 자유창에서 두 앱의 bounds를 같은 프레임에 보내면 하나만 적용되던 문제를 stagger(240ms)+재적용(repair)으로 고쳤습니다.
-  가상 디스플레이는 좌/우 display를 같은 패스에서 `setFixedSize`+`resize` 하고 220ms 뒤 한 번 더 확인합니다.
+  가상 디스플레이는 좌/우 display를 같은 패스에서 `setSurface`(표면이 바뀐 경우)+`resize` 하고 220ms 뒤 한 번 더 확인합니다.
 - **설정/앱 서랍을 다녀와도 앱 유지**: `onResume`에서 활성 엔진의 `resume()`으로 두 앱(또는 전체화면 앱)을 현재 bounds 그대로 다시 전면에 올립니다.
 - **화면 튐 제거**: 동일 bounds는 한 번만 적용하고, 런처 내 화면 전환은 `overridePendingTransition(0,0)`·`FLAG_ACTIVITY_NO_ANIMATION`으로 애니메이션을 없앴습니다.
 
