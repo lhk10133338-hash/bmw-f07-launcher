@@ -1,7 +1,27 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!--
+      v4.0: the permissions CarCar Launcher holds through its platform signature. They are *
+      declared here so the SystemUID build (sharedUserId="android.uid.system") is granted them,
+      and so the standard build can report them as unavailable and fall back to Shizuku. A normal
+      installation is simply not granted these; nothing crashes over that.
+    -->
+    <uses-permission
+        android:name="android.permission.ADD_TRUSTED_DISPLAY"
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission
+        android:name="android.permission.INJECT_EVENTS"
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission
+        android:name="android.permission.MANAGE_ACTIVITY_TASKS"
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission
+        android:name="android.permission.INTERNAL_SYSTEM_WINDOW"
+        tools:ignore="ProtectedPermissions" />
 
     <queries>
         <intent>
@@ -33,7 +53,7 @@
             android:launchMode="singleTask"
             android:resizeableActivity="true"
             android:screenOrientation="landscape"
-            android:theme="@style/Theme.BmwLauncher"
+            android:theme="@style/Theme.BmwLauncher.Splash"
             android:windowSoftInputMode="adjustNothing">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

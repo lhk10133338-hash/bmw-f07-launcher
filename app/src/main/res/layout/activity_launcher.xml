@@ -117,80 +117,79 @@
             android:id="@+id/split"
             android:layout_width="0dp"
             android:layout_height="match_parent"
-            android:layout_weight="1">
+            android:layout_weight="1"
+            android:background="@color/black">
 
+            <!-- v4.0: the pane is the whole rectangle. The app picture fills it edge to edge and
+                 the handle is a transparent overlay at the bottom, so nothing (no top bar, no
+                 bottom strip, no margin) takes space away from the app. -->
             <FrameLayout
                 android:id="@+id/leftPane"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
-                android:background="@drawable/bg_pane">
+                android:background="@color/black">
 
-                <LinearLayout
+                <FrameLayout
+                    android:id="@+id/leftContent"
                     android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:orientation="vertical">
+                    android:layout_height="match_parent">
 
-                    <FrameLayout
-                        android:id="@+id/leftContent"
+                    <SurfaceView
+                        android:id="@+id/leftSurface"
                         android:layout_width="match_parent"
-                        android:layout_height="0dp"
-                        android:layout_weight="1">
+                        android:layout_height="match_parent" />
 
-                        <SurfaceView
-                            android:id="@+id/leftSurface"
-                            android:layout_width="match_parent"
-                            android:layout_height="match_parent" />
-
-                        <LinearLayout
-                            android:id="@+id/leftEmpty"
-                            android:layout_width="match_parent"
-                            android:layout_height="match_parent"
-                            android:background="@color/black"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:gravity="center"
-                            android:orientation="vertical">
-
-                            <FrameLayout
-                                android:layout_width="54dp"
-                                android:layout_height="54dp"
-                                android:background="@drawable/bg_plus_box">
-
-                                <ImageView
-                                    android:id="@+id/leftEmptyIcon"
-                                    android:layout_width="22dp"
-                                    android:layout_height="22dp"
-                                    android:layout_gravity="center"
-                                    android:contentDescription="@string/app_add"
-                                    android:src="@drawable/ic_plus" />
-                            </FrameLayout>
-
-                            <TextView
-                                android:id="@+id/leftEmptyTitle"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:layout_marginTop="9dp"
-                                android:text="@string/app_add"
-                                android:textColor="#FFC6C6C6"
-                                android:textSize="13sp" />
-
-                            <TextView
-                                android:id="@+id/leftEmptyHint"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:layout_marginTop="3dp"
-                                android:text="@string/app_add_hint"
-                                android:textColor="#FF5C5C5C"
-                                android:textSize="10sp" />
-                        </LinearLayout>
-                    </FrameLayout>
-
-                    <com.hyteck.bmwf07launcher.ui.PaneHandle
-                        android:id="@+id/leftHandle"
+                    <LinearLayout
+                        android:id="@+id/leftEmpty"
                         android:layout_width="match_parent"
-                        android:layout_height="28dp"
-                        android:contentDescription="@string/pane_handle_hint" />
-                </LinearLayout>
+                        android:layout_height="match_parent"
+                        android:background="@color/black"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:orientation="vertical">
+
+                        <FrameLayout
+                            android:layout_width="54dp"
+                            android:layout_height="54dp"
+                            android:background="@drawable/bg_plus_box">
+
+                            <ImageView
+                                android:id="@+id/leftEmptyIcon"
+                                android:layout_width="22dp"
+                                android:layout_height="22dp"
+                                android:layout_gravity="center"
+                                android:contentDescription="@string/app_add"
+                                android:src="@drawable/ic_plus" />
+                        </FrameLayout>
+
+                        <TextView
+                            android:id="@+id/leftEmptyTitle"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="9dp"
+                            android:text="@string/app_add"
+                            android:textColor="#FFC6C6C6"
+                            android:textSize="13sp" />
+
+                        <TextView
+                            android:id="@+id/leftEmptyHint"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="3dp"
+                            android:text="@string/app_add_hint"
+                            android:textColor="#FF5C5C5C"
+                            android:textSize="10sp" />
+                    </LinearLayout>
+                </FrameLayout>
+
+                <!-- Transparent handle overlay: does not take a single dp away from the app. -->
+                <com.hyteck.bmwf07launcher.ui.PaneHandle
+                    android:id="@+id/leftHandle"
+                    android:layout_width="match_parent"
+                    android:layout_height="18dp"
+                    android:layout_gravity="bottom"
+                    android:contentDescription="@string/pane_handle_hint" />
 
                 <TextView
                     android:id="@+id/leftFullExit"
@@ -231,74 +230,68 @@
                 android:id="@+id/rightPane"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
-                android:background="@drawable/bg_pane">
+                android:background="@color/black">
 
-                <LinearLayout
+                <FrameLayout
+                    android:id="@+id/rightContent"
                     android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:orientation="vertical">
+                    android:layout_height="match_parent">
 
-                    <FrameLayout
-                        android:id="@+id/rightContent"
+                    <SurfaceView
+                        android:id="@+id/rightSurface"
                         android:layout_width="match_parent"
-                        android:layout_height="0dp"
-                        android:layout_weight="1">
+                        android:layout_height="match_parent" />
 
-                        <SurfaceView
-                            android:id="@+id/rightSurface"
-                            android:layout_width="match_parent"
-                            android:layout_height="match_parent" />
-
-                        <LinearLayout
-                            android:id="@+id/rightEmpty"
-                            android:layout_width="match_parent"
-                            android:layout_height="match_parent"
-                            android:background="@color/black"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:gravity="center"
-                            android:orientation="vertical">
-
-                            <FrameLayout
-                                android:layout_width="54dp"
-                                android:layout_height="54dp"
-                                android:background="@drawable/bg_plus_box">
-
-                                <ImageView
-                                    android:id="@+id/rightEmptyIcon"
-                                    android:layout_width="22dp"
-                                    android:layout_height="22dp"
-                                    android:layout_gravity="center"
-                                    android:contentDescription="@string/app_add"
-                                    android:src="@drawable/ic_plus" />
-                            </FrameLayout>
-
-                            <TextView
-                                android:id="@+id/rightEmptyTitle"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:layout_marginTop="9dp"
-                                android:text="@string/app_add"
-                                android:textColor="#FFC6C6C6"
-                                android:textSize="13sp" />
-
-                            <TextView
-                                android:id="@+id/rightEmptyHint"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:layout_marginTop="3dp"
-                                android:text="@string/app_add_hint"
-                                android:textColor="#FF5C5C5C"
-                                android:textSize="10sp" />
-                        </LinearLayout>
-                    </FrameLayout>
-
-                    <com.hyteck.bmwf07launcher.ui.PaneHandle
-                        android:id="@+id/rightHandle"
+                    <LinearLayout
+                        android:id="@+id/rightEmpty"
                         android:layout_width="match_parent"
-                        android:layout_height="28dp"
-                        android:contentDescription="@string/pane_handle_hint" />
-                </LinearLayout>
+                        android:layout_height="match_parent"
+                        android:background="@color/black"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:orientation="vertical">
+
+                        <FrameLayout
+                            android:layout_width="54dp"
+                            android:layout_height="54dp"
+                            android:background="@drawable/bg_plus_box">
+
+                            <ImageView
+                                android:id="@+id/rightEmptyIcon"
+                                android:layout_width="22dp"
+                                android:layout_height="22dp"
+                                android:layout_gravity="center"
+                                android:contentDescription="@string/app_add"
+                                android:src="@drawable/ic_plus" />
+                        </FrameLayout>
+
+                        <TextView
+                            android:id="@+id/rightEmptyTitle"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="9dp"
+                            android:text="@string/app_add"
+                            android:textColor="#FFC6C6C6"
+                            android:textSize="13sp" />
+
+                        <TextView
+                            android:id="@+id/rightEmptyHint"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="3dp"
+                            android:text="@string/app_add_hint"
+                            android:textColor="#FF5C5C5C"
+                            android:textSize="10sp" />
+                    </LinearLayout>
+                </FrameLayout>
+
+                <com.hyteck.bmwf07launcher.ui.PaneHandle
+                    android:id="@+id/rightHandle"
+                    android:layout_width="match_parent"
+                    android:layout_height="18dp"
+                    android:layout_gravity="bottom"
+                    android:contentDescription="@string/pane_handle_hint" />
 
                 <TextView
                     android:id="@+id/rightFullExit"
@@ -366,8 +359,8 @@
             android:layout_height="match_parent"
             android:visibility="gone" />
 
-        <!-- v3.2: an intro picture (photo, logo, M badge) instead of a video. Kept at its own
-             aspect ratio in the middle of the black screen, never cropped. -->
+        <!-- The boot logo the user chose: kept at its own aspect ratio in the middle of the black
+             screen, never cropped, never covered by a logo of the launcher itself. -->
         <ImageView
             android:id="@+id/introImage"
             android:layout_width="match_parent"

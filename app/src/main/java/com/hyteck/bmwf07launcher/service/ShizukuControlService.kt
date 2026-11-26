@@ -9,6 +9,7 @@ import android.view.InputEvent
 import android.view.MotionEvent
 import android.view.Surface
 import com.hyteck.bmwf07launcher.IShizukuControl
+import com.hyteck.bmwf07launcher.engine.WindowService
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -27,6 +28,12 @@ import java.util.concurrent.TimeUnit
  *    `VIRTUAL_DISPLAY_FLAG_TRUSTED`, falling back to `PUBLIC` and then plain flags.
  *  - **`INJECT_EVENTS`** — pushes a touch into a display that is not the default one, like
  *    `adb shell input`.
+ *
+ * v4.0 follows the original CarCar engine more closely: the display is created without a surface,
+ * `IWindowManager.dontOverrideDisplayInfo` keeps our metrics, the surface and the exact size are
+ * applied afterwards, and a touch is injected with
+ * `IWindowManager.injectInputAfterTransactionsApplied` where the firmware has it, otherwise with
+ * `syncInputTransactions` + `InputManager.injectInputEvent` as that plugin does.
  *
  * Only hidden APIs are used, and every one of them is resolved lazily and defensively: a firmware
  * that lacks one disables that single feature instead of crashing the service.
@@ -162,17 +169,32 @@ class ShizukuControlService : IShizukuControl.Stub() {
             val manager = displayManager ?: return@onDisplayThread -1
             for (flags in FLAG_SETS) {
                 try {
+                    // CarCar: the display is created without a surface, then resized to the pane
+                    // rectangle and given the surface.
                     val display = manager.createVirtualDisplay(
                         safeName,
                         width,
                         height,
                         dpi,
-                        surface,
+                        null,
                         flags
                     )
                     if (display != null) {
                         val id = display.display.displayId
                         displays[id] = display
+                        WindowService.dontOverrideDisplayInfo(id)
+                        try {
+                            display.resize(width, height, dpi)
+                        } catch (t: Throwable) {
+                            // Optional: the size is already the requested one.
+                        }
+                        if (surface != null) {
+                            try {
+                                display.surface = surface
+                            } catch (t: Throwable) {
+                                // The launcher reattaches its surface on the next callback.
+                            }
+                        }
                         return@onDisplayThread id
                     }
                 } catch (t: Throwable) {
@@ -220,6 +242,13 @@ class ShizukuControlService : IShizukuControl.Stub() {
         }
     }
 
+    override fun setDisplayState(displayId: Int, on: Boolean): Boolean {
+        val display = displays[displayId] ?: return false
+        return onDisplayThread(false) {
+            WindowService.setDisplayState(display, on)
+        }
+    }
+
     // --------------------------------------------------------------- touch
 
     override fun isReady(): Boolean = inputManager != null && injectMethod != null
@@ -229,12 +258,24 @@ class ShizukuControlService : IShizukuControl.Stub() {
         val manager = inputManager ?: return
         val inject = injectMethod ?: return
         val target = withDisplay(event, displayId) ?: return
+        // CarCar's AppView path: the event is delivered once the display transactions in flight
+        // (a resize, a surface swap) have been applied.
+        if (WindowService.injectAfterTransactions(target, MODE_ASYNC)) return
+        val action = target.actionMasked
+        if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN ||
+            action == MotionEvent.ACTION_HOVER_ENTER
+        ) {
+            WindowService.syncInputTransactions(true)
+        }
         try {
             // MODE_ASYNC (0): never block the launcher's UI thread on the input dispatcher, which
             // is what keeps a drag smooth.
             inject.invoke(manager, target, MODE_ASYNC)
         } catch (t: Throwable) {
             // A refused injection is not fatal: the next event may be accepted.
+        }
+        if (action != MotionEvent.ACTION_UP && action != MotionEvent.ACTION_CANCEL) {
+            WindowService.syncInputTransactions(true)
         }
     }
 
@@ -307,15 +348,20 @@ class ShizukuControlService : IShizukuControl.Stub() {
         // DisplayManager.VIRTUAL_DISPLAY_FLAG_* (hidden constants).
         private const val FLAG_PUBLIC = 1
         private const val FLAG_SUPPORTS_TOUCH = 1 shl 6
+        private const val FLAG_OWN_CONTENT_ONLY = 1 shl 3
+        private const val FLAG_DESTROY_CONTENT_ON_REMOVAL = 1 shl 8
         private const val FLAG_TRUSTED = 1 shl 10
+        private const val FLAG_OWN_DISPLAY_GROUP = 1 shl 11
 
         /**
-         * A trusted display is the only kind that may host another app's activity; the weaker
-         * sets keep the older behaviour working on a firmware that refuses TRUSTED even to the
-         * shell UID.
+         * CarCar Launcher's own flag set (3337 = 0xD09) comes first; the weaker sets keep the
+         * older behaviour working on a firmware that refuses TRUSTED even to the shell UID.
          */
         private val FLAG_SETS = intArrayOf(
+            FLAG_PUBLIC or FLAG_OWN_CONTENT_ONLY or FLAG_DESTROY_CONTENT_ON_REMOVAL or
+                FLAG_TRUSTED or FLAG_OWN_DISPLAY_GROUP,
             FLAG_TRUSTED or FLAG_PUBLIC or FLAG_SUPPORTS_TOUCH,
+            FLAG_PUBLIC or FLAG_SUPPORTS_TOUCH or FLAG_OWN_CONTENT_ONLY,
             FLAG_PUBLIC or FLAG_SUPPORTS_TOUCH,
             FLAG_SUPPORTS_TOUCH,
             0

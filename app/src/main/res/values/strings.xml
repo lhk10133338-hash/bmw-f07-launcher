@@ -1,11 +1,17 @@
 <resources>
-    <string name="app_name">BMW F07 Launcher</string>
-    <string name="accessibility_label">BMW F07 런처 분할 실행</string>
+    <string name="app_name">BMW MN-Launcher</string>
+    <string name="accessibility_label">BMW MN-Launcher 분할 실행</string>
     <string name="accessibility_description">분할 화면에서 앱 두 개를 지정한 위치와 크기로 실행하기 위해 사용합니다. 화면 내용을 읽거나 저장하지 않습니다.</string>
 
     <string name="settings_title">런처 설정</string>
     <string name="drawer_title">전체 앱</string>
     <string name="intro_skip_hint">화면을 터치하면 건너뜁니다</string>
+
+    <!-- theme (v4.0) -->
+    <string name="section_theme">테마</string>
+    <string name="theme_black">완전블랙</string>
+    <string name="theme_black_line">완전블랙</string>
+    <string name="theme_hint">두 테마 모두 배경 #000000 · 모서리 0dp입니다. 아래쪽 완전블랙은 창 테두리(1dp)만 없습니다.</string>
 
     <!-- dock -->
     <string name="dock_apps">전체 앱</string>
@@ -66,7 +72,7 @@
     <string name="section_engine">분할 실행 방식</string>
     <string name="engine_virtual">가상 디스플레이 · 창별 배율 (권장)</string>
     <string name="engine_system">자유창 안전 모드 · 앱 재실행 없음</string>
-    <string name="engine_virtual_desc">런처 안에 두 앱을 직접 그립니다. 제목줄이 없고, 가운데 바를 끌면 5:5~2:8로 실시간으로 함께 커지고 줄어들며, 창마다 배율(120~360 dpi)이 적용됩니다. 이 방식은 Shizuku 권한이 있어야 합니다. 안드로이드는 앱이 스스로 만든 가상 화면에 다른 앱을 띄우지 못하게 막고, Shizuku가 shell 권한으로 신뢰된 화면을 만들어 주어야 앱이 올라갑니다. Shizuku가 없거나 권한이 없으면 자유창 안전 모드로 자동 실행됩니다. (접근성 서비스는 터치 전달을 보조합니다.)</string>
+    <string name="engine_virtual_desc">런처 안에 두 앱을 직접 그립니다. 제목줄이 없고, 가운데 바를 끌면 5:5~2:8로 실시간으로 함께 커지고 줄어들며, 창마다 배율(120~360 dpi)이 적용됩니다. 카카런처와 같은 방식으로 TRUSTED 가상 화면을 만들고 터치를 그 화면으로 주입합니다. 표준 APK는 이 권한을 Shizuku(shell 권한)로 받고, SystemUID APK는 플랫폼 권한으로 직접 만듭니다. 표준 APK에서 Shizuku가 없으면 접근성 서비스로 터치를 전달하고, 둘 다 없으면 자유창 안전 모드로 자동 실행됩니다.</string>
     <string name="engine_system_desc">앱을 지정한 위치에 자유 형식 창으로 띄웁니다. 앱을 고를 때·프리셋을 누를 때만 한 번 실행하고, 비율은 손을 뗀 순간 한 번만 적용합니다. 드래그 중에는 다른 앱의 창을 건드리지 않아 앱이 멈추거나 꺼지지 않습니다. (창별 배율은 기기 기본값)</string>
     <string name="section_ratio">기본 분할 비율</string>
     <string name="section_dpi">창별 앱 화면 배율 · 120~360 dpi (가상 디스플레이)</string>
@@ -86,15 +92,16 @@
 
     <string name="switch_remember_session">마지막 분할 상태 기억 (재부팅 후 복원)</string>
     <string name="switch_boot">부팅 시 자동 실행</string>
-    <string name="switch_intro">시작할 때 인트로 재생</string>
+    <string name="switch_intro">시작할 때 부팅 로고 표시</string>
     <string name="switch_skip_return">런처로 돌아올 때는 건너뛰기</string>
     <string name="switch_dock_auto_hide">독 자동 숨김 (몇 초 뒤)</string>
-    <string name="intro_enabled">시작할 때 인트로 재생</string>
+    <string name="intro_enabled">시작할 때 부팅 로고 표시</string>
     <string name="intro_skip_return">홈으로 돌아올 때는 건너뛰기</string>
-    <string name="intro_pick_video">사진·동영상 선택</string>
-    <string name="intro_reset_video">기본 M 인트로</string>
-    <string name="intro_video_none">기본 M 인트로 (내장 애니메이션)</string>
-    <string name="intro_video_selected">선택한 인트로: %1$s</string>
+    <string name="intro_pick_video">부팅 동영상·사진 선택</string>
+    <string name="intro_reset_video">부팅 로고 없음</string>
+    <string name="intro_builtin">기본 M 인트로</string>
+    <string name="intro_video_none">지정 안 함 · 로고 없이 바로 시작</string>
+    <string name="intro_video_selected">부팅 로고: %1$s</string>
 
     <string name="btn_import_defaults">BMW 추천 6종 프리셋 불러오기</string>
     <string name="imported">프리셋 %1$d개를 독에 넣었습니다</string>
@@ -112,7 +119,7 @@
     <string name="perm_hidden_apps">숨긴 앱 관리</string>
     <string name="perm_help">도움말</string>
     <string name="perm_shizuku">Shizuku 권한</string>
-    <string name="engine_virtual_needs_touch">Shizuku 권한이 없어 자유창 안전 모드로 실행합니다. 설정에서 Shizuku를 연결하면 가상 디스플레이 방식으로 바뀝니다.</string>
+    <string name="engine_virtual_needs_touch">Shizuku 권한이 없어 자유창 안전 모드로 실행합니다. 설정에서 Shizuku를 연결하거나 SystemUID APK를 설치하면 가상 디스플레이 방식으로 바뀝니다.</string>
     <string name="shizuku_ready">Shizuku: 연결됨 · 가상 창 터치 사용 가능</string>
     <string name="shizuku_connecting">Shizuku: 연결 중…</string>
     <string name="shizuku_permission">Shizuku: 실행 중 · 권한 필요 (아래 버튼)</string>

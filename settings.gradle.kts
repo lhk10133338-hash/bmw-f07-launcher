@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "BMW-F07-Launcher"
+rootProject.name = "BMW-MN-Launcher"
 include(":app")

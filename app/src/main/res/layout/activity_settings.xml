@@ -121,7 +121,49 @@
                     style="@style/SettingsButton"
                     android:layout_marginStart="8dp"
                     android:text="@string/intro_reset_video" />
+
+                <TextView
+                    android:id="@+id/btnBuiltinIntro"
+                    style="@style/SettingsButton"
+                    android:layout_marginStart="8dp"
+                    android:text="@string/intro_builtin" />
             </LinearLayout>
+
+            <TextView
+                style="@style/SettingsSection"
+                android:text="@string/section_theme" />
+
+            <RadioGroup
+                android:id="@+id/themeGroup"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <RadioButton
+                    android:id="@+id/rbThemeBlack"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/theme_black"
+                    android:textColor="@color/text_primary"
+                    android:textSize="13sp" />
+
+                <RadioButton
+                    android:id="@+id/rbThemeBlackLine"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/theme_black_line"
+                    android:textColor="@color/text_primary"
+                    android:textSize="13sp" />
+            </RadioGroup>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/theme_hint"
+                android:textColor="@color/text_secondary"
+                android:textSize="10sp" />
 
             <TextView
                 style="@style/SettingsSection"
@@ -489,7 +531,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="18dp"
-                android:text="BMW F07 Launcher v2.1 · 2560×720 / Android 14"
+                android:text="BMW MN-Launcher v4.0 · 2560×720 / Android 14"
                 android:textColor="#FF4A4A4A"
                 android:textSize="10sp" />
         </LinearLayout>

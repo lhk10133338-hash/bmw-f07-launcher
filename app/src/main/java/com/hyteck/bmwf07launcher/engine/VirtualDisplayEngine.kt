@@ -160,6 +160,13 @@ class VirtualDisplayEngine(
      */
     private fun hostFor(side: Side): DisplayHost? {
         hosts[side]?.let { return it }
+        // v4.0: the SystemUID build holds ADD_TRUSTED_DISPLAY itself, so it creates CarCar's
+        // trusted display in-process, exactly like the original launcher.
+        if (Privileges.canCreateTrustedDisplay(context)) {
+            val host = SystemDisplayHost(displayManager)
+            hosts[side] = host
+            return host
+        }
         val control = ShizukuBridge.controlOrNull()
         if (control != null) {
             val host = ShizukuDisplayHost(control)
@@ -309,6 +316,16 @@ class VirtualDisplayEngine(
         // The app keeps its display (another app's task cannot be killed from here); the pane's
         // empty overlay simply covers it until a new app is picked.
         packages.remove(side)
+    }
+
+    /**
+     * Fullscreen hides the other pane: its display is frozen (`setDisplayState(false)`) instead of
+     * being released or left drawing, so the app keeps its state and the GPU is not asked for a
+     * picture nobody sees.
+     */
+    override fun setPaneVisible(side: Side, visible: Boolean) {
+        val displayId = displayIds[side] ?: return
+        hosts[side]?.setState(displayId, visible)
     }
 
     override fun setDensity(side: Side, dpi: Int) {

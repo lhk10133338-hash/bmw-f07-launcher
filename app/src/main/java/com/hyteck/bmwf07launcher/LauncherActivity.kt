@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Color
 import android.graphics.Rect
 import android.media.AudioManager
 import android.net.Uri
@@ -71,7 +72,7 @@ class LauncherActivity : ScaledActivity() {
     private var appliedDockAtLeft: Boolean? = null
 
     /** v3.4: puts the touches that land on a pane into that pane's virtual display. */
-    private val touchRouter by lazy { VirtualTouchRouter() }
+    private val touchRouter by lazy { VirtualTouchRouter(this) }
 
     /** The "Shizuku 또는 접근성 서비스가 필요합니다" hint is shown once per launch. */
     private var engineHintShown = false
@@ -174,6 +175,7 @@ class LauncherActivity : ScaledActivity() {
         applyImmersive()
 
         settings = Settings(this)
+        applyTheme()
         repo = AppRepository(this)
         apps = repo.apps
         ShizukuBridge.init(this)
@@ -251,6 +253,36 @@ class LauncherActivity : ScaledActivity() {
         binding.dockSave.setOnClickListener { saveCurrentPreset() }
         binding.dockHide.setOnClickListener { setDockHidden(true, persist = true) }
         binding.dockEdge.setOnClickListener { setDockHidden(false, persist = true) }
+    }
+
+    /**
+     * v4.0 테마 — 완전블랙 / 완전블랙.
+     *
+     * The user asked for "완전블랙 / 완전블랙" in the theme setting. Both entries paint the launcher
+     * `#000000`; they differ only in the 1dp seam around the panes, so the choice is visible on an
+     * empty screen:
+     *  - [Settings.THEME_BLACK] — pure black, no line at all (default).
+     *  - [Settings.THEME_BLACK_LINE] — black with the thin #161616 pane outline.
+     * Every surface of the launcher is set here, so a screen that was built before the theme was
+     * changed is corrected on the next `onResume` as well.
+     */
+    private fun applyTheme() {
+        if (!::binding.isInitialized) return
+        binding.root.setBackgroundColor(Color.BLACK)
+        binding.rootRow.setBackgroundColor(Color.BLACK)
+        binding.split.setBackgroundColor(Color.BLACK)
+        binding.introLayer.setBackgroundColor(Color.BLACK)
+        binding.leftOverlay.setBackgroundColor(Color.BLACK)
+        binding.rightOverlay.setBackgroundColor(Color.BLACK)
+        binding.leftEmpty.setBackgroundColor(Color.BLACK)
+        binding.rightEmpty.setBackgroundColor(Color.BLACK)
+        if (settings.theme == Settings.THEME_BLACK_LINE) {
+            binding.leftPane.setBackgroundResource(R.drawable.bg_pane)
+            binding.rightPane.setBackgroundResource(R.drawable.bg_pane)
+        } else {
+            binding.leftPane.setBackgroundColor(Color.BLACK)
+            binding.rightPane.setBackgroundColor(Color.BLACK)
+        }
     }
 
     /**
@@ -560,8 +592,14 @@ class LauncherActivity : ScaledActivity() {
 
     private fun setFullscreen(side: Side?) {
         closePanePanels()
+        val previous = fullscreen
         fullscreen = side
         binding.split.fullscreen = side
+        // v4.0: the pane that fullscreen left behind is frozen instead of being left to draw.
+        if (previous != side && engine?.inline == true) {
+            engine?.setPaneVisible(Side.LEFT, side != Side.RIGHT)
+            engine?.setPaneVisible(Side.RIGHT, side != Side.LEFT)
+        }
         binding.leftFullExit.visibility = if (side == Side.LEFT) View.VISIBLE else View.GONE
         binding.rightFullExit.visibility = if (side == Side.RIGHT) View.VISIBLE else View.GONE
         binding.leftEmpty.isClickable = side != Side.RIGHT
@@ -617,11 +655,11 @@ class LauncherActivity : ScaledActivity() {
             }
         }
         current.setDockKeepOut(minLeft, maxRight)
-        // v3.2: the pane's bottom strip (the launcher's own handle) stays launcher-owned. The
-        // floating window used to be placed on the full pane rectangle and covered the strip, so
-        // as soon as an app was running the strip could not be tapped or long-pressed and the
-        // pane menu was out of reach. The window now ends above the strip.
-        val strip = dp(PANE_STRIP_DP)
+        // v4.0: a virtual-display pane is the whole pane rectangle — no bottom strip is taken
+        // out of it, so the app reaches the very bottom edge of the screen. The launcher's handle
+        // is a transparent overlay drawn on top of the pane instead. Only the free-form engine,
+        // whose window would otherwise cover that overlay, keeps a slim strip free.
+        val strip = if (current.inline) 0 else dp(OVERLAY_HANDLE_DP)
         if (left.bottom - strip > left.top + dp(MIN_PANE_DP)) left.bottom -= strip
         if (right.bottom - strip > right.top + dp(MIN_PANE_DP)) right.bottom -= strip
         // Layout callbacks, the divider and onResume all report the same rectangles; hand them
@@ -1011,6 +1049,7 @@ class LauncherActivity : ScaledActivity() {
     override fun onResume() {
         super.onResume()
         applyImmersive()
+        applyTheme()
         ShizukuBridge.refresh()
         if (appliedUiScale != 0 && appliedUiScale != settings.uiScale) {
             // The launcher UI size changed in the settings screen: rebuild this screen with the
@@ -1089,12 +1128,28 @@ class LauncherActivity : ScaledActivity() {
 
     private fun playIntro() {
         if (introShowing) return
+        // v4.0: no logo of our own on the boot screen. A video or picture the user chose is the
+        // boot logo; without one (and without the explicit built-in M animation) the launcher
+        // goes straight to the panes — the eagle-like splash screen of the original launcher is
+        // not reproduced anywhere.
+        val uriValue = settings.introVideoUri?.let {
+            try {
+                Uri.parse(it)
+            } catch (e: Exception) {
+                null
+            }
+        }
+        if (uriValue == null && !settings.introBuiltin) {
+            startSession()
+            return
+        }
         introShowing = true
         binding.introLayer.visibility = View.VISIBLE
         binding.introLayer.alpha = 1f
+        binding.introLayer.setBackgroundColor(Color.BLACK)
         binding.introLayer.setOnClickListener { finishIntro() }
+        binding.introLayer.setOnLongClickListener { finishIntro(); true }
 
-        val uriValue = settings.introVideoUri?.let { Uri.parse(it) }
         when {
             uriValue != null && isImageIntro(uriValue) -> playImageIntro(uriValue)
             uriValue != null -> playVideoIntro(uriValue.toString())
@@ -1171,7 +1226,9 @@ class LauncherActivity : ScaledActivity() {
                 }
                 if (bitmap == null) {
                     handler.removeCallbacks(introImageFinishRunnable)
-                    restartAnimatedIntro()
+                    // v4.0: a broken picture is not replaced by a logo of the launcher; the
+                    // boot screen simply ends and the panes come up.
+                    if (settings.introBuiltin) restartAnimatedIntro() else finishIntro()
                 } else {
                     binding.introImage.setImageBitmap(bitmap)
                 }
@@ -1204,11 +1261,12 @@ class LauncherActivity : ScaledActivity() {
         val video = binding.introVideo
         video.visibility = View.VISIBLE
         video.onFinished = { finishIntro() }
-        video.onFailed = { restartAnimatedIntro() }
+        // v4.0: a clip that cannot be played ends the boot screen instead of flashing a logo.
+        video.onFailed = { if (settings.introBuiltin) restartAnimatedIntro() else finishIntro() }
         try {
             video.play(Uri.parse(uri))
         } catch (e: Exception) {
-            restartAnimatedIntro()
+            if (settings.introBuiltin) restartAnimatedIntro() else finishIntro()
         }
     }
 
@@ -1264,8 +1322,8 @@ class LauncherActivity : ScaledActivity() {
         /** Gap between the dock and a floating window, for its border/shadow (v3.1). */
         private const val DOCK_GAP_DP = 8
 
-        /** Height of the launcher's own handle strip at the bottom of a pane (v3.4: 28dp). */
-        private const val PANE_STRIP_DP = 28
+        /** v4.0: height kept free below a free-form window so the pane handle stays reachable. */
+        private const val OVERLAY_HANDLE_DP = 16
 
         /** A window smaller than this is not placed at all. */
         private const val MIN_PANE_DP = 48

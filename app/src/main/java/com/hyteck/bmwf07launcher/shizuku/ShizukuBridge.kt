@@ -202,5 +202,5 @@ object ShizukuBridge {
     }
 
     /** Bump this when [ShizukuControlService] changes, so Shizuku restarts the old instance. */
-    private const val SERVICE_VERSION = 2
+    private const val SERVICE_VERSION = 3
 }

@@ -70,6 +70,7 @@ class SettingsActivity : ScaledActivity() {
                 // URI and the launcher knows whether to decode an image or play a video.
                 settings.introVideoUri = uri.toString()
                 settings.introMediaType = resolveMediaType(uri)
+                settings.introBuiltin = false
                 updateVideoName()
                 toast(
                     if (isImageType(settings.introMediaType)) "인트로 사진을 지정했습니다"
@@ -120,6 +121,7 @@ class SettingsActivity : ScaledActivity() {
         binding.btnBack.setOnClickListener { finish() }
 
         setupStart()
+        setupTheme()
         setupEngine()
         setupShizuku()
         setupRatio()
@@ -192,15 +194,43 @@ class SettingsActivity : ScaledActivity() {
         binding.btnResetVideo.setOnClickListener {
             settings.introVideoUri = null
             settings.introMediaType = null
+            settings.introBuiltin = false
             updateVideoName()
-            toast("기본 M 인트로를 사용합니다")
+            toast("부팅 로고 없이 바로 시작합니다")
+        }
+        // v4.0: the built-in M animation is only used when the user asks for it; the boot screen
+        // has no logo of its own otherwise.
+        binding.btnBuiltinIntro.setOnClickListener {
+            settings.introVideoUri = null
+            settings.introMediaType = null
+            settings.introBuiltin = true
+            updateVideoName()
+            toast("내장 M 인트로를 부팅 로고로 사용합니다")
+        }
+    }
+
+    /**
+     * v4.0 테마 — 완전블랙 / 완전블랙. Both paint the launcher `#000000`; the second one drops the
+     * 1dp pane outline, so the whole screen is one flat black rectangle.
+     */
+    private fun setupTheme() {
+        binding.rbThemeBlack.isChecked = settings.theme == Settings.THEME_BLACK
+        binding.rbThemeBlackLine.isChecked = settings.theme == Settings.THEME_BLACK_LINE
+        binding.themeGroup.setOnCheckedChangeListener { _, checkedId ->
+            settings.theme =
+                if (checkedId == R.id.rbThemeBlackLine) Settings.THEME_BLACK_LINE
+                else Settings.THEME_BLACK
         }
     }
 
     private fun updateVideoName() {
         val uri = settings.introVideoUri
         if (uri == null) {
-            binding.tvVideoName.text = getString(R.string.intro_video_none)
+            binding.tvVideoName.text = if (settings.introBuiltin) {
+                getString(R.string.intro_builtin)
+            } else {
+                getString(R.string.intro_video_none)
+            }
         } else {
             val name = try {
                 Uri.parse(uri).lastPathSegment ?: uri
@@ -246,24 +276,29 @@ class SettingsActivity : ScaledActivity() {
 
     private fun showHelp() {
         val message = """
-            1. 기본 런처: '기본 런처로 설정'에서 BMW F07 Launcher를 고릅니다.
+            1. 기본 런처: '기본 런처로 설정'에서 BMW MN-Launcher를 고릅니다.
                (부팅 시 자동 실행이 켜져 있으면 부팅 완료 후에도 스스로 뜹니다.)
 
             2. 분할 방식
                · 가상 디스플레이(권장): 런처 안에 두 앱을 직접 그립니다. 제목줄이 없고 비율·배율이 즉시 반영됩니다.
-                 이 방식은 Shizuku 권한이 필요합니다(안드로이드가 앱이 만든 가상 화면에 다른 앱을 못 올리게 막음).
-                 설정의 Shizuku 권한 버튼으로 허용해 주세요. 권한이 없으면 자유창 안전 모드로 자동 실행됩니다.
+                 표준 APK는 Shizuku 권한으로, SystemUID APK는 플랫폼 권한으로 이 화면을 만듭니다.
+                 표준 APK에서 Shizuku가 없으면 접근성 서비스, 그것도 없으면 자유창 안전 모드로 자동 실행됩니다.
                · 자유창 안전 모드: 자유 형식 창이 켜져 있어야 2:8 같은 비율이 적용됩니다.
                  설정 > 개발자 옵션 > '자유 형식 창'을 켜고, 접근성 서비스를 함께 켜 주세요.
 
             3. 화면 사용법
                · 가운데 얇은 선을 좌우로 끌면 5:5 ~ 2:8로 조절됩니다. 선을 톡 누르면 비율 메뉴.
-               · 각 창 아래 반투명 회색 작은 바를 한 번 짧게 누르면 앱 변경·전체화면·앱 배기·화면 배율 메뉴가 열립니다.
+               · 각 창 아래 하단 가장자리에 비치는 가는 회색 바를 짧게 누르면 앱 변경·전체화면·앱 빼기·화면 배율 메뉴가 열립니다.
+                 바는 몇 초 뒤 흐려지며, 앱 화면을 가리지 않도록 투명 오버레이로 그려집니다.
                · 바를 위로 쓰다듬거나 길게 눌러도 같은 메뉴가 열립니다.
                · 독의 + 는 지금 두 앱과 비율을 프리셋으로 저장합니다.
                · 독의 ‹ 를 누르면 독이 숨고, 화면 왼쪽 가장자리의 얇은 선을 누르면 다시 나옵니다.
 
-            4. 상태 유지
+            4. 시작 화면
+               · 부팅 로고는 직접 고른 동영상·사진만 표시합니다. 지정하지 않으면 로고 없이 바로 시작합니다.
+                 (설정 > 시작 및 복원 > 부팅 동영상·사진 선택)
+
+            5. 상태 유지
                · '마지막 분할 상태 기억'이 켜져 있으면 재부팅 후에도 마지막 앱·비율·배율로 시작합니다.
                · 모든 설정은 즉시 저장되어 시동이 꺼져도 사라지지 않습니다.
         """.trimIndent()

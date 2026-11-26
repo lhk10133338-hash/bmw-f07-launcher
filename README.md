@@ -1,11 +1,86 @@
-# BMW F07 Launcher 3.4
+# BMW MN-Launcher 4.0
 
 BMW F07 2016 530d xDrive 5GT + MEKEDE MN-L (Android 14, 2560×720 울트라와이드) 전용
 개인용 홈 런처입니다. Kotlin + Android SDK만 사용하며 네이티브 라이브러리(.so)가 없어
 ARM64 실기기와 x86_64 에뮬레이터(LD플레이어 등) 모두에서 설치·실행됩니다.
 
-2.0은 CarCar Launcher(카카런처)의 실사용 구조를 기준으로 화면을 다시 만들었습니다.
+2.0은 CarCar Launcher(카카런처)의 실사용 구조를 기준으로 화면을 다시 만들었고,
+4.0은 그 **가상화면 엔진을 원본 APK에서 분석해 이식**하고 이름·시작 화면·여백·테마를 개편한 버전입니다.
 상단 바·하단 바를 없애고 **화면 전체를 두 개의 분할 창**, 왼쪽에 **56dp 슬림 독**만 남겼습니다.
+
+## 4.0 — 카카런처 가상화면 엔진 이식 · 이름/부팅로고/여백/테마 개편
+
+사용자 요청(2026-11-26): 앱 이름 `BMW MN-Launcher`, 독수리 같은 로고 없는 부팅 화면 +
+사용자 시작 동영상, 위아래 여백 없는 분할 화면, `완전블랙 / 완전블랙` 테마, 카카런처 가상화면 엔진 이식.
+
+### 1. 카카런처 원본 APK 분석 결과 (dexdump)
+
+`carcar-3.3.10-default`의 `classes.dex`(Flutter + 네이티브 Kotlin 플러그인)를
+`build-tools/34.0.0/dexdump -d`로 풀어 확인한 사실입니다.
+
+| 항목 | 원본 구현 | 이식 위치 |
+|---|---|---|
+| 가상화면 생성 | `DisplayManager.createVirtualDisplay(name, w, h, dpi, null, 0xD09)` — 표면 없이 만들고 나중에 붙임 | `SystemDisplayHost`, `ShizukuControlService.createDisplay` |
+| 플래그 | `0xD09` = `PUBLIC`\|`OWN_CONTENT_ONLY`\|`DESTROY_CONTENT_ON_REMOVAL`\|`TRUSTED`\|`OWN_DISPLAY_GROUP` (3337) | 같은 상수, 약한 조합으로 순차 폴백 |
+| 화면 정보 고정 | `IWindowManager.dontOverrideDisplayInfo(displayId)` — 생성 직후, 리사이즈 때마다 | `WindowService.dontOverrideDisplayInfo` |
+| 크기/밀도 | `VirtualDisplay.resize(w, h, floor(densityDpi × scale))` — 비율 변경 시 실시간 | `VirtualDisplayEngine.sync` → `DisplayHost.resize` |
+| 표면 | Flutter `TextureRegistry.SurfaceProducer.getSurface()` → `setSurface` / `setSurface(null)` | `SurfaceView.holder.surface` → `DisplayHost.setSurface` |
+| 터치 | `MotionEvent.setDisplayId(id)` → `IWindowManager.syncInputTransactions(true)` → `InputManager.injectInputEvent(event, ASYNC)` → 다시 sync (다운/포인터다운 전, 업 제외) | `SystemTouchInjector`, `ShizukuControlService.injectTouch` |
+| 터치(강화) | `IWindowManager.injectInputAfterTransactionsApplied(event, 0)` — 화면 트랜잭션 적용 후 주입 | 같은 곳에서 우선 시도 |
+| 숨긴 창 | `VirtualDisplay.setDisplayState(false/true)` — release 대신 freeze | `DisplayHost.setState`, 전체화면 전환 |
+| 앱 실행 | `ActivityOptions.setLaunchDisplayId(displayId)` + `FLAG_ACTIVITY_NEW_TASK` | `VirtualDisplayEngine.launchOnDisplay` |
+| 키 입력 | `KeyEvent.setDisplayId(id)` 후 같은 주입 경로 (BACK) | `SystemTouchInjector.injectBack` |
+| 디스플레이 감시 | `DisplayManager.registerDisplayListener` | (기존 `SurfaceHolder` 콜백 + resize로 갈음) |
+
+원본은 `sharedUserId="android.uid.system"` + 플랫폼 서명으로 위 권한을 직접 갖습니다.
+그래서 이 프로젝트도 **두 가지 APK**를 만듭니다.
+
+- **`BMW-MN-Launcher.apk` (standard)** — `sharedUserId` 없음. `ADD_TRUSTED_DISPLAY`,
+  `INJECT_EVENTS`, `MANAGE_ACTIVITY_TASKS`를 선언하지만 일반 설치는 허용되지 않으므로,
+  화면 생성·터치 주입을 **Shizuku**(adb shell UID)로 수행하고, Shizuku가 없으면 접근성 제스처,
+  그것도 없으면 자유창 안전 모드로 자동 전환합니다. 폴드8·일반 태블릿에 그대로 설치됩니다.
+- **`BMW-MN-Launcher-SystemUID.apk` (systemuid)** — `sharedUserId="android.uid.system"` 포함.
+  런처 프로세스가 곧 시스템 UID라 카카런처와 **완전히 같은 경로**로 동작합니다.
+  실차(MEKEDE MN-L)에서 플랫폼 키로 서명된 ROM에만 설치됩니다(아래 주의점 참고).
+
+### 2. 앱 이름 · 부팅 화면 (로고 제거 + 사용자 시작 동영상)
+
+- 이름: **BMW MN-Launcher** (런처 목록·설정·홈 선택 화면 모두).
+- **기본 부팅 화면에는 로고가 없습니다.** 카카런처의 독수리 스플래시를 재현하지 않고, 내장 M
+  애니메이션도 기본값에서 뺐습니다. 시작 동영상/사진을 지정하지 않으면 곧바로 분할 화면이 뜹니다.
+- **안드로이드 12+ 시스템 스플래시도 검정·아이콘 없음**으로 바꿨습니다(`Theme.BmwLauncher.Splash`).
+  콜드 스타트 때 앱 아이콘이 잠깐 뜨던 것도 사라집니다.
+- 설정 → 시작 및 복원 → **부팅 동영상·사진 선택**으로 mp4/webp/png/jpg를 고르면 그 파일이
+  부팅 로고가 됩니다. 영상은 원본 비율 그대로 화면 가운데에서 재생되고(자르지 않음), 끝나면
+  자동으로 분할 화면으로 넘어갑니다. 화면을 터치하면 즉시 건너뜁니다.
+- `부팅 로고 없음`으로 지우거나, 원하면 `기본 M 인트로`를 명시적으로 고를 수 있습니다.
+
+### 3. 분할 화면 여백 제거 (0dp · 직사각)
+
+- 창 아래 **28dp 핸들 띠를 없앴습니다.** 앱 화면(SurfaceView)이 창 사각형을 **위아래 끝까지** 채웁니다.
+- 핸들은 이제 **투명 오버레이**입니다. 창 하단 가장자리에 72×4dp 회색 알약 하나만 그리고,
+  4초 뒤 28%로 흐려져 앱 화면을 가리지 않으며, 손이 닿으면 다시 밝아집니다.
+  짧게 누르기·길게 누르기·위로 스와이프 모두 그대로 창 메뉴를 엽니다.
+- 상태바·내비게이션 바는 몰입 모드로 항상 숨기고, 컷아웃도 `LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS`로
+  그 위까지 그립니다. 여백·모서리 반경 0dp, 배경 `#000000`.
+- 자유창 안전 모드에서만 창 아래 16dp를 비워 핸들이 창에 가려지지 않게 했습니다(가상화면은 0dp).
+
+### 4. 테마 — 완전블랙 / 완전블랙
+
+- 설정 → 테마에 **완전블랙 / 완전블랙** 두 항목을 넣었습니다(기본: 첫 번째).
+  둘 다 배경 `#000000`이고, 두 번째만 창 테두리 1dp를 없앤 완전 평면입니다.
+- 창·독·오버레이·설정 화면 배경을 모두 `#000000`, 모서리 0dp로 통일했습니다.
+
+### 5. 설치 주의점
+
+- **standard APK**: 일반 폰/태블릿(폴드8 포함)에 그대로 설치됩니다. 가상화면 방식은 Shizuku 권한을
+  허용해야 하며, 없으면 접근성 서비스(Android 11+)로 탭·스크롤만 되고, 그것도 없으면 자유창 모드로 뜹니다.
+- **SystemUID APK**: `sharedUserId="android.uid.system"` 때문에 **플랫폼 키로 서명되지 않은 기기에서는
+  설치 자체가 거부**됩니다(`Package … has no signatures that match those in shared user android.uid.system`).
+  실차에서는 ① 플랫폼 키로 다시 서명(apksigner)하거나 ② 서명 검증을 끈 커스텀 ROM/루팅 환경에서만 설치하세요.
+  두 APK는 패키지명이 달라(`com.hyteck.bmwf07launcher.systemuid`) 한 기기에 같이 설치할 수 있습니다.
+- 앱 데이터(프리셋·설정)는 두 APK가 서로 공유하지 않습니다.
+
 
 ## 3.4 — 가상 디스플레이 + Shizuku 터치 주입 · 하단 회색 바 클릭 메뉴
 
@@ -102,16 +177,16 @@ v2.1에서 `네이버지도`·`QQ음악HD`가 `응답하지 않음` 후 꺼진 �
 │시계│                        │ │                        │
 │프리│                        │ │                        │
 │셋  │                        │ │                        │
-│+   ├────────────────────────┤ ├────────────────────────┤
-│앱  │ ▬ (20dp 핸들)          │ │ ▬ (20dp 핸들)          │
-│설정│                        │ │                        │
+│+   │                        │ │                        │
+│앱  │                        │ │                        │
+│설정│                     ▬  │ │                     ▬  │  ← 투명 핸들 오버레이(0dp)
 └────┴────────────────────────┴─┴────────────────────────┘
 ```
 
-- **올블랙 + 0dp 직사각**: 배경 `#000000`, 모든 모서리 반경 0dp, 장식 없음.
+- **올블랙 + 0dp 직사각**: 배경 `#000000`, 모든 모서리 반경 0dp, 위아래 여백 0dp, 장식 없음.
 - **좌측 슬림 독(56dp)**: 작은 시계·날짜 → 저장한 분할 프리셋 타일 → `+` 저장 →
   전체 앱 서랍 → 설정 → `‹` 숨기기. 숨기면 화면 왼쪽 가장자리의 얇은 선을 눌러 다시 꺼냅니다.
-- **창 하단 얇은 핸들(20dp)**: 앱 화면을 가리지 않는 선 하나.
+- **창 하단 얇은 핸들(18dp 오버레이)**: 앱 화면을 가리지 않는 투명 오버레이. 4초 뒤 흐려지고,
   탭하거나 약 0.8초 길게 누르면 그 창의 메뉴(앱 변경·선택 · 전체화면 · 앱 빼기 · 화면 배율)가 창 안에서 열립니다,
   전체화면에서는 우상단 `복귀` 칩이나 핸들 다시 길게 눌러 2분할로 돌아옵니다.
 - **중앙 디바이더**: 평소에는 1px 선. 좌우로 끌면 5:5 ~ 2:8 (20~80%) 자유 조절,
@@ -140,9 +215,9 @@ v2.1에서 `네이버지도`·`QQ음악HD`가 `응답하지 않음` 후 꺼진 �
   왼쪽 창 메뉴는 왼쪽 창 밖으로 나가지 않으므로, 오른쪽 창 메뉴가 옆의 자유창 앱에 가려지지 않습니다.
 - **시작/복원**: 부팅 시 자동 실행(`RECEIVE_BOOT_COMPLETED`), 마지막 좌/우 앱·비율·배율 복원.
   모든 설정은 `SharedPreferences.commit()`으로 즉시 기록해 시동이 급히 꺼져도 유지됩니다.
-- **BMW M 인트로**: 내장 M 스트라이프 애니메이션 또는 사용자가 고른 `.mp4`.
-  영상은 원본 비율을 유지한 채 화면 가운데에 맞춰(FIT_CENTER) 재생하고, 남는 좌우는 올블랙입니다.
-  영상은 `TextureView` centre-crop으로 2560×720을 빈틈없이 채우고, 위에 안내 문구를 띄우지 않습니다(터치하면 스킵).
+- **부팅 로고(선택)**: 직접 고른 동영상·사진을 시작 화면으로 씁니다. 지정하지 않으면 로고 없이 바로 시작합니다.
+  영상은 원본 비율을 유지한 채 화면 가운데에 맞춰 재생하고, 남는 좌우는 올블랙이며, 위에 안내 문구를 띄우지 않습니다(터치하면 스킵).
+  `TextureView`로 재생하며 2560×720에서도 비율이 틀어지지 않고, 끝나면 자동으로 분할 화면으로 넘어갑니다.
 
 ## 2.1에서 고친 것 (2026-11-24 저녁)
 
@@ -176,9 +251,16 @@ v2.1에서 `네이버지도`·`QQ음악HD`가 `응답하지 않음` 후 꺼진 �
 로컬: JDK 17 + Android SDK 34 + Gradle 8.7
 
 ```
-gradle assembleDebug
-gradle lintDebug
+gradle assembleDebug     # 두 APK(standard, systemuid) 모두 빌드
+gradle lintDebug         # 두 debug 변형 lint (오류 0건)
+
+gradle assembleStandardDebug    # 표준 APK만
+gradle assembleSystemuidDebug   # SystemUID APK만
 ```
+
+산출물:
+- `app/build/outputs/apk/standard/debug/app-standard-debug.apk`
+- `app/build/outputs/apk/systemuid/debug/app-systemuid-debug.apk`
 
 GitHub Actions로 뽑을 때는 저장소 루트의 `GITHUB_ACTIONS_BUILD.yml` 내용을
 `.github/workflows/build.yml`로 복사해 Actions에서 실행하면 됩니다.

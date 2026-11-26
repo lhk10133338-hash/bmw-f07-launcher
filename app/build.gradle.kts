@@ -25,8 +25,33 @@ android {
         applicationId = "com.hyteck.bmwf07launcher"
         minSdk = 26
         targetSdk = 34
-        versionCode = 8
-        versionName = "3.4"
+        versionCode = 9
+        versionName = "4.0"
+    }
+
+    /**
+     * v4.0: two installations of the same launcher, because the virtual-display engine needs
+     * platform privileges that an ordinary app cannot hold (see the CarCar analysis in README):
+     *
+     *  - `standard`  — no sharedUserId. Creates its trusted displays and injects touches through
+     *                  Shizuku (adb shell identity), and falls back to the accessibility gesture
+     *                  and the free-form engine. Installs on any phone/tablet, fold 8 included.
+     *  - `systemuid` — `android:sharedUserId="android.uid.system"`, the way CarCar Launcher
+     *                  ships. Direct DisplayManager / IWindowManager access. Only installs on a
+     *                  unit whose ROM signs it with the platform key (the MEKEDE car unit).
+     */
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("standard") {
+            dimension = "distribution"
+        }
+        create("systemuid") {
+            dimension = "distribution"
+            // A separate application id, so both APKs can sit on the same unit without fighting
+            // over one package (the sharedUid itself still requires the platform signature).
+            applicationIdSuffix = ".systemuid"
+            versionNameSuffix = "-systemuid"
+        }
     }
 
     buildTypes {
@@ -59,6 +84,14 @@ android {
         // virtual displays (IShizukuControl.aidl).
         aidl = true
     }
+
+    lint {
+        abortOnError = true
+        checkReleaseBuilds = false
+        // sharedUserId is deprecated for new apps but is exactly what the platform-signed build
+        // needs; CarCar Launcher ships the same way.
+        disable += "SharedUidUsageByUid"
+    }
 }
 
 dependencies {
@@ -70,4 +103,15 @@ dependencies {
     // it can hand touches to the two virtual displays (a normal app cannot).
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
+}
+
+/**
+ * With two flavors Android Gradle Plugin no longer creates a single `lintDebug` task (the
+ * candidates are `lintStandardDebug` and `lintSystemuidDebug`). This aggregate keeps the familiar
+ * command working and lints both debug variants.
+ */
+tasks.register("lintDebug") {
+    group = "verification"
+    description = "Runs lint on every debug variant (standard and systemuid)."
+    dependsOn("lintStandardDebug", "lintSystemuidDebug")
 }

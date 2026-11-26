@@ -1,4 +1,4 @@
-name: Build BMW F07 Launcher APK
+name: Build BMW MN-Launcher APK
 
 on:
   workflow_dispatch:
@@ -31,12 +31,22 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Build debug APK
+      - name: Build both debug APKs (standard + systemuid)
         run: gradle assembleDebug --no-daemon --stacktrace
 
-      - name: Upload APK
+      - name: Lint both debug variants
+        run: gradle lintDebug --no-daemon --stacktrace
+
+      - name: Upload standard APK
         uses: actions/upload-artifact@v4
         with:
-          name: bmw-f07-launcher-debug
-          path: app/build/outputs/apk/debug/*.apk
+          name: BMW-MN-Launcher
+          path: app/build/outputs/apk/standard/debug/*.apk
+          if-no-files-found: error
+
+      - name: Upload SystemUID APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: BMW-MN-Launcher-SystemUID
+          path: app/build/outputs/apk/systemuid/debug/*.apk
           if-no-files-found: error

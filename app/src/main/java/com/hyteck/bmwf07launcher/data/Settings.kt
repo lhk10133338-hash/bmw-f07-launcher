@@ -138,6 +138,23 @@ class Settings(context: Context) {
         set(value) = putString(KEY_INTRO_URI, value)
 
     /**
+     * v4.0: the built-in M animation is no longer the default boot logo. When no video or picture
+     * has been chosen the launcher starts straight into the panes; this flag is only set when the
+     * user explicitly picks "기본 M 인트로" again.
+     */
+    var introBuiltin: Boolean
+        get() = prefs.getBoolean(KEY_INTRO_BUILTIN, false)
+        set(value) = write { it.putBoolean(KEY_INTRO_BUILTIN, value) }
+
+    /**
+     * v4.0 theme. The user asked for `완전블랙 / 완전블랙`: both entries paint the whole launcher
+     * `#000000`, the second one without the 1dp seam between the panes.
+     */
+    var theme: Int
+        get() = prefs.getInt(KEY_THEME, THEME_BLACK).coerceIn(THEME_BLACK, THEME_BLACK_LINE)
+        set(value) = write { it.putInt(KEY_THEME, value.coerceIn(THEME_BLACK, THEME_BLACK_LINE)) }
+
+    /**
      * MIME type of the intro media picked in the settings (v3.2: a picture is allowed as well as
      * a video). Null for an installation that picked a video before the type was stored; the
      * launcher then falls back to the file's extension.
@@ -259,6 +276,12 @@ class Settings(context: Context) {
         const val ENGINE_SYSTEM = "system"
         const val ENGINE_VIRTUAL = "virtual"
 
+        /** 완전블랙: pure `#000000`, rectangular panes, no seam. */
+        const val THEME_BLACK = 0
+
+        /** 완전블랙 (테두리): `#000000` with a 1dp seam between the panes. */
+        const val THEME_BLACK_LINE = 1
+
         const val MAX_PRESETS = 12
         const val MIN_DPI = 120
         const val MAX_DPI = 360
@@ -287,6 +310,8 @@ class Settings(context: Context) {
         private const val KEY_INTRO = "intro_enabled"
         private const val KEY_INTRO_SKIP_RETURN = "intro_skip_return"
         private const val KEY_INTRO_URI = "intro_uri"
+        private const val KEY_INTRO_BUILTIN = "intro_builtin"
+        private const val KEY_THEME = "theme"
         private const val KEY_INTRO_MEDIA_TYPE = "intro_media_type"
         private const val KEY_LAST_PRESET = "last_preset"
         private const val KEY_HIDDEN = "hidden_packages"

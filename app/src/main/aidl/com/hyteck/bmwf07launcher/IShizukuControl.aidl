@@ -32,6 +32,12 @@ interface IShizukuControl {
     void releaseDisplay(int displayId);
 
     /**
+     * Freezes (false) or resumes (true) the app on this pane's display without releasing it,
+     * the way CarCar Launcher pauses the pane that fullscreen left behind.
+     */
+    boolean setDisplayState(int displayId, boolean on);
+
+    /**
      * Injects [event] into the display [displayId]. The coordinates in [event] are display
      * pixels; the launcher's SurfaceView is exactly the size of the display, so no scaling is
      * needed. Multi-touch pointers are carried along unchanged.

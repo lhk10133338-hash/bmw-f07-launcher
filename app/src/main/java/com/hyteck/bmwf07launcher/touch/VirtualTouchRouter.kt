@@ -1,5 +1,6 @@
 package com.hyteck.bmwf07launcher.touch
 
+import android.content.Context
 import android.graphics.Path
 import android.view.MotionEvent
 import com.hyteck.bmwf07launcher.service.LauncherAccessibilityService
@@ -10,11 +11,14 @@ import kotlin.math.abs
  * Sends the touches a pane receives to the app running on that pane's virtual display (v3.4).
  *
  * A virtual display's content is drawn inside the launcher, so the launcher is what receives the
- * finger — the app on the display never does. Two routes put it back:
+ * finger — the app on the display never does. Three routes put it back, strongest first:
  *
- *  1. **Shizuku** (instant): the event is parceled to [com.hyteck.bmwf07launcher.service.
- *     ShizukuControlService], which injects it into the display with `InputManager`. Down, move,
- *     up and multi-touch all go through, so dragging and scrolling feel native.
+ *  0. **In-process injection** (SystemUID build): the launcher process is the platform UID and
+ *     holds `INJECT_EVENTS`, so [SystemTouchInjector] addresses the event to the display and
+ *     injects it directly — CarCar Launcher's own path.
+ *  1. **Shizuku** (standard build, instant): the event is parceled to [com.hyteck.bmwf07launcher.
+ *     service.ShizukuControlService], which injects it into the display with `InputManager`.
+ *     Down, move, up and multi-touch all go through, so dragging and scrolling feel native.
  *  2. **Accessibility service** (no Shizuku needed): the finger's path is collected and replayed
  *     with `GestureDescription` on that display when the finger lifts (a tap becomes a 50 ms
  *     stroke at one point). `GestureDescription.Builder.setDisplayId` needs Android 11+, and a
@@ -23,7 +27,7 @@ import kotlin.math.abs
  * When neither route exists the caller must not be running the virtual-display engine at all; the
  * launcher selects the engine accordingly.
  */
-class VirtualTouchRouter {
+class VirtualTouchRouter(private val context: Context) {
 
     /** Path of the gesture currently being collected for the accessibility route. */
     private val points = ArrayList<Float>()
@@ -38,6 +42,11 @@ class VirtualTouchRouter {
      */
     fun handle(displayId: Int, event: MotionEvent) {
         if (displayId < 0) return
+        if (SystemTouchInjector.canInject(context) && SystemTouchInjector.inject(displayId, event)) {
+            points.clear()
+            gestureDisplayId = -1
+            return
+        }
         if (ShizukuBridge.injectTouch(displayId, event)) {
             // Shizuku took it whole: drop any half-collected fallback gesture.
             points.clear()

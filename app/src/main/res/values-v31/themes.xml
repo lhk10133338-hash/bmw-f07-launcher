@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- API 31+: black, icon-less splash so nothing but the user's own boot media appears. -->
+    <style name="Theme.BmwLauncher.Splash" parent="Theme.BmwLauncher">
+        <item name="android:windowSplashScreenBackground">@color/black</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@android:color/transparent</item>
+        <item name="android:windowSplashScreenAnimationDuration">0</item>
+    </style>
+
+</resources>

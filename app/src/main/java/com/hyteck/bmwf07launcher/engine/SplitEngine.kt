@@ -28,6 +28,12 @@ interface SplitEngine {
 
     fun setDensity(side: Side, dpi: Int)
 
+    /**
+     * Fullscreen hides the other pane. An inline engine may freeze that display; the system
+     * engine has nothing to do because the free-form window is simply covered.
+     */
+    fun setPaneVisible(side: Side, visible: Boolean) {}
+
     fun applyBounds(left: Rect, right: Rect, commit: Boolean)
 
     /**

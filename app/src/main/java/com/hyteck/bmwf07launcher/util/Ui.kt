@@ -42,10 +42,14 @@ fun Context.toast(message: String) {
 fun Activity.applyImmersive() {
     WindowCompat.setDecorFitsSystemWindows(window, false)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-        window.attributes = window.attributes.apply {
-            layoutInDisplayCutoutMode =
-                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // v4.0: draw behind the notch even when the notch is on a short edge; a head unit's
+            // camera cut-out must not push a pane inward and leave a black column.
+            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+        } else {
+            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
+        window.attributes = window.attributes.apply { layoutInDisplayCutoutMode = mode }
     }
     val controller = WindowCompat.getInsetsController(window, window.decorView)
     controller.hide(WindowInsetsCompat.Type.systemBars())

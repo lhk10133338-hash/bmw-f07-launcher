@@ -6,16 +6,18 @@ import android.view.Surface
 import com.hyteck.bmwf07launcher.IShizukuControl
 
 /**
- * Where a pane's virtual display comes from (v3.4).
+ * Where a pane's virtual display comes from (v4.0).
  *
- * The engine only needs four operations; who performs them decides whether the apps may actually
+ * The engine only needs six operations; who performs them decides whether the apps may actually
  * be placed on that display:
  *
- *  - [ShizukuDisplayHost] — the display is made by the shell-side service, which may set
- *    `VIRTUAL_DISPLAY_FLAG_TRUSTED`. Only a trusted display accepts another app's activity, so
- *    this is the route that works on a stock Android.
- *  - [LocalDisplayHost] — the display is made by the launcher itself, as every version before 3.4
- *    did. Kept as a fallback for a head unit whose firmware allows launches on its own virtual
+ *  - [SystemDisplayHost] — the launcher itself is the platform UID (the `systemuid` build), so it
+ *    creates CarCar's exact `TRUSTED | OWN_DISPLAY_GROUP` display and calls the hidden
+ *    `IWindowManager` helpers directly.
+ *  - [ShizukuDisplayHost] — the display is made by the shell-side service, which may set the same
+ *    `TRUSTED` flag. This is the route of the standard build on a stock Android.
+ *  - [LocalDisplayHost] — the display is made by the launcher with ordinary app permissions.
+ *    Kept as a fallback for a head unit whose firmware allows launches on its own virtual
  *    displays (the MEKEDE unit did in 2.x), and for the case where Shizuku is not installed.
  */
 interface DisplayHost {
@@ -26,6 +28,13 @@ interface DisplayHost {
     fun resize(displayId: Int, width: Int, height: Int, dpi: Int): Boolean
 
     fun setSurface(displayId: Int, surface: Surface?)
+
+    /**
+     * Freezes or resumes the app on a hidden display (`VirtualDisplay.setDisplayState`), the way
+     * CarCar pauses the pane that fullscreen left behind. A host that cannot do it simply keeps
+     * the display running.
+     */
+    fun setState(displayId: Int, on: Boolean) {}
 
     fun release(displayId: Int)
 }
@@ -51,6 +60,14 @@ class ShizukuDisplayHost(private val control: IShizukuControl) : DisplayHost {
             control.setDisplaySurface(displayId, surface)
         } catch (e: Exception) {
             // The service went away; the engine rebuilds its displays on the next resume.
+        }
+    }
+
+    override fun setState(displayId: Int, on: Boolean) {
+        try {
+            control.setDisplayState(displayId, on)
+        } catch (e: Exception) {
+            // An older shell service: the pane simply keeps drawing.
         }
     }
 
@@ -110,6 +127,10 @@ class LocalDisplayHost(private val displayManager: DisplayManager) : DisplayHost
         }
     }
 
+    override fun setState(displayId: Int, on: Boolean) {
+        WindowService.setDisplayState(displays[displayId], on)
+    }
+
     override fun release(displayId: Int) {
         displays.remove(displayId)?.let { display ->
             try {
@@ -122,7 +143,7 @@ class LocalDisplayHost(private val displayManager: DisplayManager) : DisplayHost
 
     companion object {
         // DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC / _SUPPORTS_TOUCH / _OWN_CONTENT_ONLY
-        // (hidden constants). TRUSTED is tried by the shell side only.
+        // (hidden constants). TRUSTED is tried by the privileged hosts only.
         private const val FLAG_PUBLIC = 1
         private const val FLAG_OWN_CONTENT_ONLY = 1 shl 3
         private const val FLAG_SUPPORTS_TOUCH = 1 shl 6
