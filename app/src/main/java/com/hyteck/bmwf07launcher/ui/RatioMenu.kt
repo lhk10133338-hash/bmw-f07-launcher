@@ -13,6 +13,11 @@ import com.hyteck.bmwf07launcher.util.dp
 
 /**
  * Tap/long-press on the divider: eight rectangular buttons, nothing else.
+ *
+ * v4.6: the choice is applied from the dialog's *dismiss* callback, not from the button's click.
+ * `Dialog.dismiss()` removes the dialog window and only then dispatches the dismiss message, so the
+ * ratio change — which replaces both panes' displays — no longer races the removal of a window that
+ * was holding the focus over the launcher.
  */
 object RatioMenu {
 
@@ -25,6 +30,13 @@ object RatioMenu {
         onSwap: () -> Unit
     ) {
         val dialog = Dialog(activity, R.style.Theme_BmwLauncher_Dialog)
+        // What the closed dialog should do, run once its window is gone.
+        var pending: (() -> Unit)? = null
+        dialog.setOnDismissListener {
+            val action = pending
+            pending = null
+            action?.invoke()
+        }
         val content = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(activity.dp(12), activity.dp(10), activity.dp(12), activity.dp(12))
@@ -39,8 +51,8 @@ object RatioMenu {
 
         RATIOS.forEachIndexed { index, ratio ->
             val button = ratioButton(activity, ratio, ratio == current) {
+                pending = { onPick(ratio) }
                 dialog.dismiss()
-                onPick(ratio)
             }
             val params = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             params.marginStart = if (index % 4 == 0) 0 else activity.dp(4)
@@ -48,8 +60,8 @@ object RatioMenu {
         }
 
         val swap = ratioButtonText(activity, activity.getString(R.string.ratio_swap), false) {
+            pending = onSwap
             dialog.dismiss()
-            onSwap()
         }
         val swapParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         swapParams.marginStart = activity.dp(4)

@@ -41,8 +41,12 @@ interface IShizukuControl {
      * Injects [event] into the display [displayId]. The coordinates in [event] are display
      * pixels; the launcher's SurfaceView is exactly the size of the display, so no scaling is
      * needed. Multi-touch pointers are carried along unchanged.
+     *
+     * v4.6: `oneway`. A touch is sent from the launcher's main thread, so the call must not wait
+     * for this process to finish injecting — a synchronisation that stalls on a display being
+     * replaced would otherwise freeze the launcher's whole screen.
      */
-    void injectTouch(int displayId, in MotionEvent event);
+    oneway void injectTouch(int displayId, in MotionEvent event);
 
     /** True when this service found an InputManager and can inject touches. */
     boolean isReady();

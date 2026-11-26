@@ -31,9 +31,9 @@ import java.util.concurrent.TimeUnit
  *
  * v4.0 follows the original CarCar engine more closely: the display is created without a surface,
  * `IWindowManager.dontOverrideDisplayInfo` keeps our metrics, the surface and the exact size are
- * applied afterwards, and a touch is injected with
- * `IWindowManager.injectInputAfterTransactionsApplied` where the firmware has it, otherwise with
- * `syncInputTransactions` + `InputManager.injectInputEvent` as that plugin does.
+ * applied afterwards, and a touch is injected with `syncInputTransactions` +
+ * `InputManager.injectInputEvent` as that plugin does (v4.6: bracketing the gesture, and delivered
+ * `oneway` so the launcher's main thread never waits on this process).
  *
  * Only hidden APIs are used, and every one of them is resolved lazily and defensively: a firmware
  * that lacks one disables that single feature instead of crashing the service.
@@ -262,23 +262,25 @@ class ShizukuControlService : IShizukuControl.Stub() {
         val manager = inputManager ?: return
         val inject = injectMethod ?: return
         val target = withDisplay(event, displayId) ?: return
-        // CarCar's AppView path: the event is delivered once the display transactions in flight
-        // (a resize, a surface swap) have been applied.
-        if (WindowService.injectAfterTransactions(target, MODE_ASYNC)) return
         val action = target.actionMasked
+        // v4.6: `syncInputTransactions` is a blocking binder call and this used to do it after
+        // every non-up event, i.e. on every move of a drag — the inverse of what CarCar's
+        // `La8/c0.i` does. The gesture is bracketed, not the frame.
         if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN ||
             action == MotionEvent.ACTION_HOVER_ENTER
         ) {
             WindowService.syncInputTransactions(true)
         }
         try {
-            // MODE_ASYNC (0): never block the launcher's UI thread on the input dispatcher, which
-            // is what keeps a drag smooth.
+            // MODE_ASYNC (0): never block on the input dispatcher, which is what keeps a drag
+            // smooth.
             inject.invoke(manager, target, MODE_ASYNC)
         } catch (t: Throwable) {
             // A refused injection is not fatal: the next event may be accepted.
         }
-        if (action != MotionEvent.ACTION_UP && action != MotionEvent.ACTION_CANCEL) {
+        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL ||
+            action == MotionEvent.ACTION_HOVER_EXIT
+        ) {
             WindowService.syncInputTransactions(true)
         }
     }

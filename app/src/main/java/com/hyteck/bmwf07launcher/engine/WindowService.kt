@@ -1,6 +1,5 @@
 package com.hyteck.bmwf07launcher.engine
 
-import android.view.InputEvent
 import java.lang.reflect.Method
 
 /**
@@ -8,12 +7,17 @@ import java.lang.reflect.Method
  *
  * These were read out of the original APK: `La8/c0` (the plugin's virtual-display manager) calls
  * `IWindowManager.syncInputTransactions(boolean)`, and the AppView view (`Lw7/g`) calls
- * `IWindowManager.dontOverrideDisplayInfo(int)` right after creating its display, plus
- * `IWindowManager.injectInputAfterTransactionsApplied(InputEvent, int)` to send a touch into that
- * display after the display transaction that resized it has been applied.
+ * `IWindowManager.dontOverrideDisplayInfo(int)` right after creating its display.
  *
- * Both are `@hide` and are not declared in the public SDK, so they are looked up by name and every
- * failure is swallowed: a firmware without them keeps working through the public fallbacks.
+ * **v4.6 removed `injectInputAfterTransactionsApplied` from here.** The AppView of the original
+ * calls it from its own window's thread; a launcher that calls it from the thread its fingers
+ * arrive on waits for the display transactions of a *replaced* display and freezes the whole
+ * screen (see [com.hyteck.bmwf07launcher.touch.SystemTouchInjector]). A touch is now always
+ * `InputManager.injectInputEvent(..., MODE_ASYNC)` on a thread of its own.
+ *
+ * The remaining calls are `@hide` and are not declared in the public SDK, so they are looked up by
+ * name and every failure is swallowed: a firmware without them keeps working through the public
+ * fallbacks.
  */
 internal object WindowService {
 
@@ -33,14 +37,6 @@ internal object WindowService {
 
     private val syncInputTransactions: Method? by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         method("syncInputTransactions", Boolean::class.javaPrimitiveType!!)
-    }
-
-    private val injectAfterTransactions: Method? by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
-        method(
-            "injectInputAfterTransactionsApplied",
-            InputEvent::class.java,
-            Int::class.javaPrimitiveType!!
-        )
     }
 
     private fun method(name: String, vararg types: Class<*>): Method? = try {
@@ -72,6 +68,9 @@ internal object WindowService {
      * Waits for the display transactions that are in flight (a resize, a surface swap) to reach
      * the input dispatcher. CarCar brackets a touch injection with this so a finger that arrives
      * right after a divider move lands in the display at its new geometry.
+     *
+     * This is a blocking binder call. It must never be made from the launcher's main thread —
+     * [com.hyteck.bmwf07launcher.touch.SystemTouchInjector] calls it on its own injector thread.
      */
     fun syncInputTransactions(sync: Boolean = true) {
         val method = syncInputTransactions ?: return
@@ -79,19 +78,6 @@ internal object WindowService {
             method.invoke(service, sync)
         } catch (t: Throwable) {
             // Optional on this firmware.
-        }
-    }
-
-    /**
-     * Injects [event] after the pending display transactions are applied. Returns false when the
-     * firmware has no such call, so the caller can fall back to `InputManager.injectInputEvent`.
-     */
-    fun injectAfterTransactions(event: InputEvent, mode: Int): Boolean {
-        val method = injectAfterTransactions ?: return false
-        return try {
-            (method.invoke(service, event, mode) as? Boolean) ?: false
-        } catch (t: Throwable) {
-            false
         }
     }
 

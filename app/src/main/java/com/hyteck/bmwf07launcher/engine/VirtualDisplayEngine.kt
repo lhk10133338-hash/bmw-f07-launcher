@@ -57,6 +57,28 @@ import kotlin.math.abs
  *
  * Nothing is ever detached from a display that stays alive, and no display is resized in place.
  *
+ * ## v4.6 — a ratio change no longer takes the whole screen's touch with it (2026-11-26)
+ *
+ * The car unit tested v4.5 and reported: "전보다는 좋아졌어 그런데 화면비율 변경이 들어가면 화면전체가
+ * 터치가 안되는 문제가있어. 물론 껏다키면 다시동작해". A ratio change moves *both* panes, so both
+ * displays were replaced at once, each of them while the launcher's main thread was also doing the
+ * touch injection of the pane underneath the finger (see
+ * [com.hyteck.bmwf07launcher.touch.SystemTouchInjector]). Two display transactions, a task move and
+ * a release on top of a binder call that waits for exactly those transactions is what the input
+ * dispatcher stalls on, and the launcher's main thread is where the stall landed.
+ *
+ * v4.6 handles it on both sides of that:
+ *
+ *  - the touch injection is copied on the main thread and delivered on a thread of its own, so no
+ *    platform call in the touch path can ever block the thread a finger arrives on;
+ *  - only **one** pane's display is replaced at a time ([swapping]); the other pane waits its turn
+ *    (250 ms), so a ratio change no longer puts two display transactions in flight together;
+ *  - the old displays are released one at a time, a moment apart ([retire]), instead of both at
+ *    the same instant.
+ *
+ * The extra few hundred milliseconds are invisible (the app is already on its new display); the
+ * stall was not.
+ *
  * ## What else is kept from v4.0–v4.4
  *
  *  - The first display of a pane is created exactly the way v4.0 created it and the way CarCar
@@ -135,8 +157,17 @@ class VirtualDisplayEngine(
     /** How many displays a pane has been given, for the log. */
     private val generations = HashMap<Side, Int>()
 
-    /** Displays whose release is scheduled; flushed by [release] if the engine ends first. */
-    private val retiring = ArrayList<Pair<DisplayHost, Int>>()
+    /** Displays whose release is scheduled; [retire] lets one go at a time. */
+    private val retiring = ArrayDeque<Pair<DisplayHost, Int>>()
+
+    /** True while [pumpRetire] is waiting to release the next display. */
+    private var retiringBusy = false
+
+    /** The pane whose display is being replaced right now; only one replacement at a time (v4.6). */
+    private var swapping: Side? = null
+
+    /** When the last pane display was replaced, so the two panes keep a gap between them (v4.6). */
+    private var lastSwapEndedAt = 0L
 
     private var unavailableReported = false
     private var launchErrorReported = false
@@ -381,6 +412,34 @@ class VirtualDisplayEngine(
      */
     private fun replaceDisplay(side: Side) {
         if (released) return
+        if (swapping != null) {
+            // The other pane's display is being replaced right now.
+            scheduleSwap(side, RETRY_MS)
+            return
+        }
+        // A ratio change moves both panes, so both replacements come due in the same frame. Two
+        // display transactions (a create, a task move, a release) in one moment is exactly what
+        // the input dispatcher stalled on; v4.6 does one pane, waits a beat, then the other.
+        val gap = System.currentTimeMillis() - lastSwapEndedAt
+        if (lastSwapEndedAt != 0L && gap < SWAP_GAP_MS) {
+            scheduleSwap(side, SWAP_GAP_MS - gap + 20L)
+            return
+        }
+        val before = panes[side]
+        swapping = side
+        try {
+            replaceDisplayNow(side)
+        } finally {
+            swapping = null
+            // Only a pass that really gave the pane another display opens the gate for the other
+            // pane; one that had nothing to do does not delay it.
+            if (panes[side] !== before) lastSwapEndedAt = System.currentTimeMillis()
+        }
+    }
+
+    /** The body of [replaceDisplay]; runs only while this pane holds the one replacement slot. */
+    private fun replaceDisplayNow(side: Side) {
+        if (released) return
         val view = viewOf(side)
         if (!view.isShown) return
         val width = view.width
@@ -455,13 +514,31 @@ class VirtualDisplayEngine(
         }
         // The app has left the old display (moved) or a new instance is starting on the new one:
         // its content is not needed any more.
-        val oldDisplay = pane.displayId
-        retiring.add(host to oldDisplay)
-        handler.postDelayed({
-            if (released) return@postDelayed
-            host.release(oldDisplay)
-        }, RELEASE_DELAY_MS)
+        retire(host, pane.displayId)
         scheduleReport(side, created)
+    }
+
+    /**
+     * Queues [displayId] for release, [delayMs] from now (v4.6).
+     *
+     * A ratio change replaces both panes, and releasing two displays in the same moment is one of
+     * the display transactions the input dispatcher stalled on. [pumpRetire] therefore lets one
+     * go, then the next, spacing them by [RELEASE_DELAY_MS].
+     */
+    private fun retire(host: DisplayHost, displayId: Int, delayMs: Long = RELEASE_DELAY_MS) {
+        retiring.addLast(host to displayId)
+        pumpRetire(delayMs)
+    }
+
+    private fun pumpRetire(delayMs: Long = RELEASE_DELAY_MS) {
+        if (retiringBusy) return
+        val next = retiring.removeFirstOrNull() ?: return
+        retiringBusy = true
+        handler.postDelayed({
+            retiringBusy = false
+            if (!released) next.first.release(next.second)
+            pumpRetire(delayMs)
+        }, delayMs)
     }
 
     /**
@@ -603,8 +680,7 @@ class VirtualDisplayEngine(
         val host = hosts[side]
         if (old != null && host != null) {
             // Give the new display time to take the app before the old one takes it away.
-            retiring.add(host to old.displayId)
-            handler.postDelayed({ if (!released) host.release(old.displayId) }, RELEASE_DELAY_MS + 400L)
+            retire(host, old.displayId, RELEASE_DELAY_MS + 400L)
             Log.i(TAG, "pane $side redraw requested; display ${old.displayId} will be released")
         }
         if (viewOf(side).width > 0 && viewOf(side).height > 0) {
@@ -667,6 +743,9 @@ class VirtualDisplayEngine(
         // A display whose release was still pending would otherwise outlive the engine.
         retiring.forEach { (owner, displayId) -> owner.release(displayId) }
         retiring.clear()
+        retiringBusy = false
+        swapping = null
+        lastSwapEndedAt = 0L
         statusLabels.values.forEach { label -> (label.parent as? ViewGroup)?.removeView(label) }
         statusLabels.clear()
         packages.clear()
@@ -694,6 +773,9 @@ class VirtualDisplayEngine(
 
         /** Do not replace the same pane's display more often than this (an app restart each time). */
         private const val SWAP_COOLDOWN_MS = 900L
+
+        /** The two panes' displays are never replaced in the same moment (v4.6). */
+        private const val SWAP_GAP_MS = 240L
 
         /** A read-back of the display's size, only for the log. */
         private const val REPORT_DELAY_MS = 700L

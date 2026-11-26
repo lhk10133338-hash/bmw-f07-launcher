@@ -58,7 +58,14 @@ internal object TaskMover {
      * platform confirms that a task of [packageName] is now on the new display.
      */
     fun moveRootTasks(fromDisplay: Int, toDisplay: Int, packageName: String?): Boolean {
-        if (fromDisplay < 0 || toDisplay < 0 || fromDisplay == toDisplay) return false
+        // v4.6: a pane's display is always a virtual one, so a 0 on either side can only mean the
+        // main display — the launcher's own screen and the car's system UI. Moving anything off
+        // it (or onto it) is never what this is for, and a wrong id here takes the whole screen
+        // down instead of one pane.
+        if (fromDisplay <= 0 || toDisplay <= 0 || fromDisplay == toDisplay) {
+            Log.w(TAG, "TaskMover: refusing to move tasks between display $fromDisplay and $toDisplay")
+            return false
+        }
         val service = service ?: return false
         val rootTaskIds = rootTaskIdsOn(service, fromDisplay)
         if (rootTaskIds.isEmpty()) {
@@ -116,13 +123,26 @@ internal object TaskMover {
 
     // ------------------------------------------------------------------ internals
 
+    /**
+     * The tasks the platform lists for [displayId].
+     *
+     * v4.6: every task returned here has been checked against the display it claims to be on. The
+     * oldest firmware form of `getTasks` takes no display id at all and happily lists display 0 —
+     * the launcher's own task and the car's system UI — so that form is only ever trusted for an
+     * explicit match ([strictlyOn]).
+     */
     private fun tasksOn(service: Any, displayId: Int): List<Any> {
+        if (displayId < 0) return emptyList()
         // IActivityTaskManager.getTasks(int maxNum, boolean filterOnlyVisibleRecents,
         //                              boolean keepIntentExtra, int displayId)
-        val result = invokeForResult(service, "getTasks", MAX_TASKS, 0, 0, displayId)
-            ?: invokeForResult(service, "getTasks", MAX_TASKS, 0, displayId)
+        val byDisplay = invokeForResult(service, "getTasks", MAX_TASKS, 0, 0, displayId)
+        if (byDisplay != null) {
+            return asList(byDisplay).filter { ownDisplay(it, displayId) }
+        }
+        val legacy = invokeForResult(service, "getTasks", MAX_TASKS, 0, displayId)
             ?: invokeForResult(service, "getTasks", MAX_TASKS, 0)
-        return asList(result)
+            ?: return emptyList()
+        return asList(legacy).filter { strictlyOn(it, displayId) }
     }
 
     private fun taskIdsOn(service: Any, displayId: Int): List<Int> =
@@ -162,6 +182,16 @@ internal object TaskMover {
     private fun ownDisplay(info: Any?, displayId: Int): Boolean {
         if (info == null) return false
         val reported = intField(info, "displayId") ?: return true
+        return reported == displayId
+    }
+
+    /**
+     * True only when the info names [displayId] itself. Used for a listing that was not filtered
+     * by the platform: an info whose display cannot be read is not taken on trust there.
+     */
+    private fun strictlyOn(info: Any?, displayId: Int): Boolean {
+        if (info == null) return false
+        val reported = intField(info, "displayId") ?: return false
         return reported == displayId
     }
 
