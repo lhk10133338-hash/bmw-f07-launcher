@@ -16,7 +16,10 @@ ARM64 실기기와 x86_64 에뮬레이터(LD플레이어 등) 모두에서 설�
 ### 1. 카카런처 원본 APK 분석 결과 (dexdump)
 
 `carcar-3.3.10-default`의 `classes.dex`(Flutter + 네이티브 Kotlin 플러그인)를
-`build-tools/34.0.0/dexdump -d`로 풀어 확인한 사실입니다.
+`build-tools/34.0.0/dexdump -d`로 풀어 확인한 사실입니다. 가상화면 관련 코드는
+`com.example.virtual_display_views.VirtualDisplayViewsChannel`(Flutter 채널)과
+`Lo1/*`, `La8/*`(VirtualDisplayManager), `Lw7/*`·`Lx7/*`·`Ly7/*`·`Lz7/*`(SurfaceView 기반 AppView),
+`Lb8/*`, `Lv7/*`(설정 값)에 들어 있었습니다.
 
 | 항목 | 원본 구현 | 이식 위치 |
 |---|---|---|
@@ -31,6 +34,11 @@ ARM64 실기기와 x86_64 에뮬레이터(LD플레이어 등) 모두에서 설�
 | 앱 실행 | `ActivityOptions.setLaunchDisplayId(displayId)` + `FLAG_ACTIVITY_NEW_TASK` | `VirtualDisplayEngine.launchOnDisplay` |
 | 키 입력 | `KeyEvent.setDisplayId(id)` 후 같은 주입 경로 (BACK) | `SystemTouchInjector.injectBack` |
 | 디스플레이 감시 | `DisplayManager.registerDisplayListener` | (기존 `SurfaceHolder` 콜백 + resize로 갈음) |
+
+원본 `Lw7/g`는 Flutter 텍스처 표면을 `SurfaceControl` 컨테이너 레이어로 감싸
+(`IWindowSession.reparentDisplayContent`) 가상화면을 그 TextureView에 합성합니다.
+이 프로젝트는 Flutter가 아니라 네이티브 View를 쓰므로, 같은 역할을 `SurfaceView.holder.surface`를
+가상화면 출력 표면으로 직접 쓰는 방식으로 대체했습니다(합성 레이어 불필요).
 
 원본은 `sharedUserId="android.uid.system"` + 플랫폼 서명으로 위 권한을 직접 갖습니다.
 그래서 이 프로젝트도 **두 가지 APK**를 만듭니다.
