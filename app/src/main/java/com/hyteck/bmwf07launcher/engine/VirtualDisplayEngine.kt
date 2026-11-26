@@ -27,60 +27,49 @@ import kotlin.math.abs
  * Renders both apps inside the launcher window: each pane owns a virtual display that is
  * drawn into a SurfaceView, so the two apps really are two windows of this launcher.
  *
- * ## Which version this is
+ * ## v4.5 — a pane's display is replaced, never re-pointed (2026-11-26)
  *
- * v4.4. It is **v4.0's output path** (the only one that has ever shown a picture on the car unit)
- * with the buffer pinning taken out. Everything v4.1 added around the display's lifetime —
- * `setDisplayState` on create/resume, rebuilding a display because `DisplayManager.getDisplay()`
- * did not list it, and the 400 ms re-apply loop — stays gone: v4.0 put a picture on the right pane
- * for a whole session with none of it, and v4.1 stopped showing anything at all after adding it.
+ * The car unit reported this for every version from v4.0 to v4.4: both panes draw on a fresh start,
+ * the moment the split ratio moves the left pane stays black, and going into the launcher's own
+ * settings screen and coming back blacks out both — while killing and restarting the launcher puts
+ * the picture back, every time.
  *
- * ## What v4.4 fixes (a ratio change blackened both panes, 2026-11-26)
+ * The last part is the whole diagnosis: **a display this firmware has just created draws, and a
+ * display that is asked to follow our SurfaceView afterwards does not.** AOSP v4.5's own
+ * `VirtualDisplayAdapter` says the same thing at a lower level: `setSurfaceLocked` only records a
+ * pending change and `resizeLocked`only records a pending size; both are flushed into one
+ * `SurfaceControl.Transaction` on the *display* (`setDisplaySurface` / `setDisplaySize`), and on
+ * this head unit's SurfaceFlinger the display that was created against surface A keeps drawing
+ * into A' geometry and never picks up a new binding. CarCar Launcher never hits it because it
+ * never reuses a surface: for every size change `La8/c0.b()` throws the old Flutter surface into a
+ * pending list, makes a **new** one, calls `setSurface(new)` and only then `resize()`.
  *
- * On the car unit a freshly booted launcher drew **both** panes, and the moment the split ratio was
- * dragged, **both** of them went black. The only thing a ratio change added was
- * [SurfaceHolder.setFixedSize]: at the boot ratio (50:50) a pane's `surfaceFrame` already equals its
- * view rectangle, so the pin was skipped and the picture came up; as soon as the ratio moved, the
- * pin ran, the view threw its Surface away and built another one asynchronously
- * (`surfaceDestroyed` → `surfaceCreated`), and the display was left pointing at the dead one. The
- * original CarCar launcher never calls `setFixedSize` either. It is now gone from this engine
- * altogether, together with the `pinned`/`pinTries` bookkeeping that existed only to decide when to
- * call it.
+ * A native `SurfaceView` cannot mint a new surface on demand, so v4.5 does what the user confirmed
+ * works — it creates the display again:
  *
- * That call is not needed: a `match_parent` `SurfaceView` has its buffer resized by the framework on
- * every layout and reports the new size through `surfaceChanged`. A ratio change therefore does the
- * two things the platform does need — [DisplayHost.setSurface] when the surface object itself is new,
- * then [DisplayHost.resize] to the pane rectangle at the pane's density — and nothing else.
+ *  1. A pane's rectangle or surface changed → wait until the layout has settled (a divider drag
+ *     makes dozens of passes per second, and only the final rectangle is worth a display).
+ *  2. Create a **new** display at that rectangle, on the pane's current surface.
+ *  3. Move the app's root task onto it with [TaskMover] (`moveRootTaskToDisplay`, the call behind
+ *     `am display move-stack`), so a navigation route or a player keeps running; when the platform
+ *     refuses, start the app on the new display instead.
+ *  4. Release the old display.
  *
- * ## What v4.0 does (kept)
+ * Nothing is ever detached from a display that stays alive, and no display is resized in place.
  *
- *  1. The display is created/resized to the pane rectangle the SurfaceView was laid out to, at the
- *     pane's density.
- *  2. A ratio change only resizes the display; the display and the app on it are never released.
- *     The app gets an ordinary configuration change instead of being started again.
- *  3. On create the size is applied first and the output surface last
- *     ([SystemDisplayHost.create]).
+ * ## What else is kept from v4.0–v4.4
  *
- * ## What is kept from v4.2/v4.3
- *
- *  1. **Nothing is done from inside a SurfaceView callback.** v4.0 called into the display
- *     synchronously from `surfaceChanged`, i.e. while the view was still updating its own surface;
- *     on the car unit that left the **left pane black for good** after a ratio change (user report
- *     2026-11-26) while the right pane kept working. The callbacks now only schedule a pass on the
- *     main looper.
- *  2. **A failed route says so on screen** (v4.3). If the platform privilege behind the trusted
- *     display is missing, or `create`/the app launch fails, a short status line appears over the
- *     pane (a toast alone vanishes before anyone can read it in a car) and the reason is logged. A
- *     healthy pane never shows it.
- *  3. **A pane's output surface is never detached** with `setSurface(null)` while the pane lives.
- *     Detaching a virtual display's surface is "similar to turning off the screen" (platform
- *     documentation), and with `DESTROY_CONTENT_ON_REMOVAL` the platform throws the running app
- *     away with it — which is exactly how a pane that lost its surface once never came back.
- *     A surface that is being re-created is simply replaced by the next one.
- *
- * A display is rebuilt only when `VirtualDisplay.resize` has failed twice in a row: that is the
- * one case where the display itself is no longer answering. A display that merely is not listed
- * by `DisplayManager` is left alone (v4.1 rebuilt those on every pass and lost both panes).
+ *  - The first display of a pane is created exactly the way v4.0 created it and the way CarCar
+ *    creates it (`createVirtualDisplay(name, w, h, dpi, null, 0xD09)`, then `dontOverrideDisplayInfo`,
+ *    then the rectangle, then the surface — see [SystemDisplayHost]).
+ *  - **Nothing is done from inside a SurfaceView callback**: the callbacks only schedule a pass on
+ *    the main looper, and the display work happens outside `SurfaceView`'s own update.
+ *  - A failed route says so on screen ([showStatus]) and in the `MNLauncher` log, because a black
+ *    pane in a car gives nothing else to go on.
+ *  - A hidden pane (fullscreen) is frozen with `setDisplayState(false)` instead of being released,
+ *    so the app keeps its state.
+ *  - A pane whose app died (the platform is free to kill a display's content) is started again when
+ *    the launcher comes back in front ([resume]).
  *
  * v3.4 — the display is made where the platform allows it to host apps (see [DisplayHost]),
  * and every touch that lands on a pane is forwarded into that pane's display ([touchSink]).
@@ -102,18 +91,25 @@ class VirtualDisplayEngine(
     override val inline: Boolean = true
     override val supportsDpi: Boolean = true
 
+    /**
+     * One pane's live display: which display it is, which surface it was created on and the
+     * rectangle it was created at. A display whose record no longer matches the pane is replaced.
+     */
+    private class Pane(
+        val displayId: Int,
+        val surface: Surface,
+        val width: Int,
+        val height: Int,
+        val dpi: Int
+    )
+
     private val displayManager =
         context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
     private val handler = Handler(Looper.getMainLooper())
 
     /** Who creates the displays: the shell side when Shizuku is bound, else this process. */
     private val hosts = HashMap<Side, DisplayHost>()
-    private val displayIds = HashMap<Side, Int>()
-    private val surfaces = HashMap<Side, Surface>()
-
-    /** The rectangle the display was last asked for (v4.0's early-out check). */
-    private val sizes = HashMap<Side, IntArray>()
-
+    private val panes = HashMap<Side, Pane>()
 
     /** A one-line status over a pane, shown only when something actually failed (v4.3). */
     private val statusLabels = HashMap<Side, TextView>()
@@ -127,25 +123,27 @@ class VirtualDisplayEngine(
     /** Short, bounded retries while a pane's SurfaceView is between two surfaces. */
     private val surfaceWaits = HashMap<Side, Int>()
 
-    /** Consecutive `resize` refusals, so only a display that stopped answering is rebuilt. */
-    private val resizeFailures = HashMap<Side, Int>()
+    /** The one pending display replacement per pane, re-posted while the layout keeps moving. */
+    private val swaps = HashMap<Side, Runnable>()
 
-    /** The one pending read-back per pane, replaced on every new resize (a drag makes many). */
-    private val readBacks = HashMap<Side, Runnable>()
+    /** When this pane's display was last replaced, so a jittery layout cannot replace it forever. */
+    private val swappedAt = HashMap<Side, Long>()
 
-    /** Per side, so resizing the left display never swallows the right one's callback. */
-    private val syncing = HashSet<Side>()
+    /** True while a pane's SurfaceView is between two surfaces (the display work is deferred). */
+    private val surfaceLost = HashSet<Side>()
+
+    /** How many displays a pane has been given, for the log. */
+    private val generations = HashMap<Side, Int>()
+
+    /** Displays whose release is scheduled; flushed by [release] if the engine ends first. */
+    private val retiring = ArrayList<Pair<DisplayHost, Int>>()
+
     private var unavailableReported = false
     private var launchErrorReported = false
     private var privilegeReported = false
     private var released = false
 
     private val syncRunnable = Runnable {
-        syncSide(Side.LEFT)
-        syncSide(Side.RIGHT)
-    }
-
-    private val followUpSync = Runnable {
         syncSide(Side.LEFT)
         syncSide(Side.RIGHT)
     }
@@ -163,7 +161,7 @@ class VirtualDisplayEngine(
         view.isClickable = true
         view.setOnClickListener { /* the touch itself is forwarded in the listener below */ }
         view.setOnTouchListener { touched, event ->
-            val displayId = displayIds[side] ?: -1
+            val displayId = panes[side]?.displayId ?: -1
             if (displayId >= 0) touchSink?.invoke(displayId, event)
             if (event.actionMasked == MotionEvent.ACTION_UP) touched.performClick()
             true
@@ -171,27 +169,22 @@ class VirtualDisplayEngine(
         view.holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(holder: SurfaceHolder) {
                 // v4.3: only schedule. The surface this callback announces is created inside
-                // SurfaceView's own update; the scheduled pass runs when it is complete and
-                // attaches it there.
+                // SurfaceView's own update; the pass runs when it is complete.
+                Log.i(TAG, "pane $side surface created")
                 scheduleSync()
             }
 
-            /**
-             * v4.2: schedules only. Calling into the display from here ran inside SurfaceView's
-             * own surface update — the re-entrancy that wedged the left pane on the car unit. The
-             * view has finished laying itself out by the time the scheduled pass runs.
-             */
             override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
                 scheduleSync()
             }
 
             override fun surfaceDestroyed(holder: SurfaceHolder) {
-                // The display, its app and its size stay as they are; the surface that is going
-                // away is replaced in surfaceCreated. v4.0 detached the output here, which turns
-                // the pane off and, with DESTROY_CONTENT_ON_REMOVAL, takes its app down with it —
-                // a pane that hit this once never showed a picture again.
-                Log.i(TAG, "pane $side surface destroyed; keeping display ${displayIds[side]}")
-                surfaces.remove(side)
+                // The display is left alone here: it is not detached and not released, so its app
+                // keeps running. The new surface this pane gets next is a different object, and
+                // the next pass replaces the display onto it ([replaceDisplay]) — the one route
+                // this firmware has always drawn.
+                Log.i(TAG, "pane $side surface destroyed; display ${panes[side]?.displayId} kept")
+                surfaceLost.add(side)
                 scheduleSync()
             }
         })
@@ -200,16 +193,6 @@ class VirtualDisplayEngine(
                 if (right - left > 0 && bottom - top > 0) scheduleSync()
             }
         }
-    }
-
-    /** Puts the pane's new surface on its display, keeping the display and the app. */
-    private fun attachSurface(side: Side, surface: Surface) {
-        val displayId = displayIds[side] ?: return
-        if (surfaces[side] === surface) return
-        hosts[side]?.setSurface(displayId, surface)
-        surfaces[side] = surface
-        // The app itself is untouched: it has been running on this display all along and simply
-        // gets its picture back. The rectangle is re-applied by the pass scheduled here.
     }
 
     private fun viewOf(side: Side): SurfaceView =
@@ -270,30 +253,32 @@ class VirtualDisplayEngine(
     }
 
     override fun applyBounds(left: Rect, right: Rect, commit: Boolean) {
-        // The SurfaceViews already have the exact pane size; re-read it and resize the displays.
-        // One extra pass follows a commit so a resize that landed between two layout frames is
-        // not left behind. Neither pass starts an app.
+        // The SurfaceViews already have the exact pane size; the pass below compares that size with
+        // the size the pane's display was created at and replaces the display if it moved.
         scheduleSync()
-        if (commit) {
-            handler.removeCallbacks(followUpSync)
-            handler.postDelayed(followUpSync, FOLLOW_UP_MS)
-        }
     }
 
     /**
-     * The launcher came back in front (or a surface came back): put the current surface on the
-     * display again and re-apply both rectangles. No app is started and no display is rebuilt.
+     * The launcher came back in front: re-apply both rectangles, and — only for a pane that really
+     * went through a surface loss — start its app again when the platform took it away (a released
+     * display takes its content with it, and a firmware may reclaim it as well).
+     *
+     * A plain return from the launcher's own screens is not such a moment any more: those screens
+     * are translucent (v4.5), the launcher is never stopped and its surfaces are never destroyed,
+     * so [surfaceLost] stays empty and nothing here touches the displays.
      */
     override fun resume(sides: Set<Side>) {
         if (released) return
         for (side in sides) {
-            if (packages[side] == null) continue
-            val surface = viewOf(side).holder.surface
-            if (surface != null && surface.isValid) attachSurface(side, surface)
+            val pkg = packages[side] ?: continue
+            val displayId = panes[side]?.displayId ?: continue
+            if (!surfaceLost.contains(side)) continue
+            if (!TaskMover.hasTask(displayId, pkg)) {
+                Log.w(TAG, "pane $side app $pkg is gone from display $displayId; starting it again")
+                launchOnDisplay(side, pkg, displayId, reorder = false)
+            }
         }
         scheduleSync()
-        handler.removeCallbacks(followUpSync)
-        handler.postDelayed(followUpSync, FOLLOW_UP_MS)
     }
 
     private fun syncSide(side: Side) {
@@ -306,161 +291,217 @@ class VirtualDisplayEngine(
         val width = view.width
         val height = view.height
         if (width <= 0 || height <= 0) return
-        sync(side, width, height)
-    }
 
-    private fun sync(side: Side, width: Int, height: Int) {
-        if (released) return
-        if (!syncing.add(side)) {
-            // A callback for this side arrived while its own resize was running: do it again so
-            // the newest size wins (this used to be a single flag shared by both panes, which
-            // silently dropped the other pane's resize).
+        val surface = view.holder.surface
+        if (surface == null || !surface.isValid) {
+            // Between two surfaces. surfaceCreated/surfaceChanged schedule the real pass; these
+            // few retries only cover a callback that was missed.
+            val tries = (surfaceWaits[side] ?: 0) + 1
+            surfaceWaits[side] = tries
+            if (tries <= MAX_SURFACE_WAITS) scheduleSync()
+            return
+        }
+        surfaceWaits.remove(side)
+
+        val host = hostFor(side) ?: run {
+            // Still waiting for the Shizuku touch service.
             scheduleSync()
             return
         }
-        try {
-            val view = viewOf(side)
-            val holder = view.holder
-            val surface = holder.surface
-            if (surface == null || !surface.isValid) {
-                // Between two surfaces. surfaceCreated/surfaceChanged schedule the real pass;
-                // these few retries only cover a callback that was missed.
-                val tries = (surfaceWaits[side] ?: 0) + 1
-                surfaceWaits[side] = tries
-                if (tries <= MAX_SURFACE_WAITS) scheduleSync()
-                return
-            }
-            surfaceWaits.remove(side)
+        waits.remove(side)
 
-            val host = hostFor(side) ?: run {
-                // Still waiting for the Shizuku touch service.
-                scheduleSync()
-                return
-            }
-            waits.remove(side)
-
-            val density = densityOf(side)
-            val existing = displayIds[side]
-            val record = sizes[side]
-
-            if (existing != null && record != null &&
-                record[0] == width && record[1] == height && record[2] == density &&
-                surfaces[side] === surface
-            ) {
-                return
-            }
-
-            // v4.4: no `setFixedSize` anywhere. The pane is `match_parent`, so the framework has
-            // already given its buffer the pane rectangle and `surfaceChanged` has reported it; a
-            // pin here only made the view rebuild its Surface under the display's feet, which is
-            // exactly what blackened both panes when the ratio was dragged on the car unit.
-            if (existing != null) {
-                // 2) The display is asked for the same rectangle. It keeps its app.
-                if (surfaces[side] !== surface) {
-                    host.setSurface(existing, surface)
-                    surfaces[side] = surface
-                }
-                if (!host.resize(existing, width, height, density)) {
-                    // A display that refuses the size may simply be between two states; the next
-                    // layout pass (or the follow-up pass) tries again. Only a display that keeps
-                    // refusing is rebuilt, because that is the only way to get a picture back.
-                    val failures = (resizeFailures[side] ?: 0) + 1
-                    resizeFailures[side] = failures
-                    sizes.remove(side)
-                    Log.w(TAG, "pane $side resize to ${width}x$height refused ($failures)")
-                    if (failures >= MAX_RESIZE_FAILURES) {
-                        Log.w(TAG, "pane $side display $existing stopped answering; rebuilding")
-                        resizeFailures.remove(side)
-                        dropDisplay(side)
-                        scheduleSync()
-                    }
-                    return
-                }
-                resizeFailures.remove(side)
-                sizes[side] = intArrayOf(width, height, density)
-                Log.i(TAG, "pane $side display $existing resized to ${width}x$height @$density")
-                scheduleReadBack(side, width, height, density, 0)
-                return
-            }
-
-            // 3) The first pass for this pane: create the display, then start its app.
-            val created = host.create(displayName(side), width, height, density, surface)
-            if (created < 0) {
-                // v4.3: say which route refused, on screen and in the log — a pane that stays
-                // black gives nothing else to go on.
-                Log.e(
-                    TAG,
-                    "pane $side create failed via ${hostName(host)} " +
-                        "(trusted=${Privileges.canCreateTrustedDisplay(context)}, " +
-                        "systemUid=${Privileges.isSystemUid()})"
-                )
-                showStatus(side, "가상 화면을 만들 수 없습니다\n${hostName(host)}")
-                reportUnavailable()
-                return
-            }
-            displayIds[side] = created
-            surfaces[side] = surface
-            sizes[side] = intArrayOf(width, height, density)
-            resizeFailures.remove(side)
-            hideStatus(side)
-            Log.i(
-                TAG,
-                "pane $side display $created created at ${width}x$height @$density " +
-                    "via ${hostName(host)}, surface ${surface.hashCode()}"
-            )
-            packages[side]?.let { launchOnDisplay(side, it, created, reorder = true) }
-            scheduleReadBack(side, width, height, density, 0)
-        } finally {
-            syncing.remove(side)
+        val pane = panes[side]
+        if (pane == null) {
+            createDisplay(side, host, width, height, densityOf(side), surface)
+            return
         }
+
+        val dpi = densityOf(side)
+        val surfaceReplaced = pane.surface !== surface
+        val geometryMoved = abs(pane.width - width) > SIZE_TOLERANCE ||
+            abs(pane.height - height) > SIZE_TOLERANCE || pane.dpi != dpi
+        if (!surfaceReplaced && !geometryMoved) return
+
+        // A drag makes dozens of these passes; only the rectangle it settles on is worth a display.
+        scheduleSwap(side, if (surfaceReplaced) SURFACE_SWAP_MS else GEOMETRY_SETTLE_MS)
+    }
+
+    /** Re-posts the pane's replacement; it runs once the pane has stopped moving. */
+    private fun scheduleSwap(side: Side, delayMs: Long) {
+        swaps.remove(side)?.let { handler.removeCallbacks(it) }
+        // One replacement per pane per moment: a display that keeps being replaced would restart
+        // its app again and again, which is worse than a pane that waits a second.
+        val since = System.currentTimeMillis() - (swappedAt[side] ?: 0L)
+        val wait = maxOf(delayMs, SWAP_COOLDOWN_MS - since)
+        val task = Runnable { replaceDisplay(side) }
+        swaps[side] = task
+        handler.postDelayed(task, wait)
+    }
+
+    /** The first display of a pane — the path that has drawn on the unit since v4.0. */
+    private fun createDisplay(
+        side: Side,
+        host: DisplayHost,
+        width: Int,
+        height: Int,
+        dpi: Int,
+        surface: Surface
+    ) {
+        val created = host.create(displayName(side), width, height, dpi, surface)
+        if (created < 0) {
+            // v4.3: say which route refused, on screen and in the log — a pane that stays black
+            // gives nothing else to go on.
+            Log.e(
+                TAG,
+                "pane $side create failed via ${hostName(host)} " +
+                    "(trusted=${Privileges.canCreateTrustedDisplay(context)}, " +
+                    "systemUid=${Privileges.isSystemUid()})"
+            )
+            showStatus(side, "가상 화면을 만들 수 없습니다\n${hostName(host)}")
+            reportUnavailable()
+            return
+        }
+        panes[side] = Pane(created, surface, width, height, dpi)
+        swappedAt[side] = System.currentTimeMillis()
+        surfaceLost.remove(side)
+        generations[side] = (generations[side] ?: 0) + 1
+        hideStatus(side)
+        Log.i(
+            TAG,
+            "pane $side display $created created at ${width}x$height @$dpi " +
+                "via ${hostName(host)}, surface ${surface.hashCode()}"
+        )
+        packages[side]?.let { launchOnDisplay(side, it, created, reorder = true) }
+        scheduleReport(side, created)
     }
 
     /**
-     * Reads the display's real rectangle once, a moment after it was created or resized, and
-     * **only writes a log line** — unless the display is there and clearly kept another size, in
-     * which case the size is applied one more time. Nothing is detached, released or rebuilt from
-     * here: v4.1's read-back dropped displays that `DisplayManager` did not list for this UID and
-     * that is what took both panes off the screen.
+     * Gives a pane a new display at its current rectangle and surface, moves the running app onto
+     * it and releases the old one (v4.5 — see the class header).
      */
-    private fun scheduleReadBack(side: Side, width: Int, height: Int, density: Int, attempt: Int) {
-        readBacks.remove(side)?.let { handler.removeCallbacks(it) }
-        val task = Runnable { readBack(side, width, height, density, attempt) }
-        readBacks[side] = task
-        handler.postDelayed(task, READ_BACK_DELAY_MS)
-    }
-
-    private fun readBack(side: Side, width: Int, height: Int, density: Int, attempt: Int) {
+    private fun replaceDisplay(side: Side) {
         if (released) return
-        val displayId = displayIds[side] ?: return
-        val current = sizes[side] ?: return
-        if (current[0] != width || current[1] != height || current[2] != density) return
-        val display = try {
-            displayManager.getDisplay(displayId)
-        } catch (t: Throwable) {
-            null
-        }
-        if (display == null) {
-            // Not listed for this UID (the pane lives in its own display group). That says
-            // nothing about whether it draws, so the pane is left exactly as it is.
-            Log.i(TAG, "pane $side display $displayId is not listed by DisplayManager")
+        val view = viewOf(side)
+        if (!view.isShown) return
+        val width = view.width
+        val height = view.height
+        val surface = view.holder.surface
+        val pane = panes[side]
+        val host = hosts[side] ?: hostFor(side) ?: run {
+            scheduleSwap(side, RETRY_MS)
             return
         }
-        val real = Point()
-        val measured = runCatching { display.getRealSize(real) }.isSuccess
+        if (width <= 0 || height <= 0 || surface == null || !surface.isValid) {
+            scheduleSwap(side, RETRY_MS)
+            return
+        }
+        val dpi = densityOf(side)
+        if (pane == null) {
+            createDisplay(side, host, width, height, dpi, surface)
+            return
+        }
+        if (pane.surface === surface &&
+            abs(pane.width - width) <= SIZE_TOLERANCE &&
+            abs(pane.height - height) <= SIZE_TOLERANCE && pane.dpi == dpi
+        ) {
+            return
+        }
+        swapDisplay(side, host, pane, width, height, dpi, surface)
+    }
+
+    private fun swapDisplay(
+        side: Side,
+        host: DisplayHost,
+        pane: Pane,
+        width: Int,
+        height: Int,
+        dpi: Int,
+        surface: Surface
+    ) {
+        val created = host.create(displayName(side), width, height, dpi, surface)
+        if (created < 0) {
+            // The display could not be made again: fall back to pointing the old one at the new
+            // surface. It may stay black, but it is better than a pane with no display at all, and
+            // the next change (or "화면 다시 그리기") tries again.
+            Log.e(
+                TAG,
+                "pane $side could not create a replacement display via ${hostName(host)}; " +
+                    "re-pointing display ${pane.displayId}"
+            )
+            host.setSurface(pane.displayId, surface)
+            host.resize(pane.displayId, width, height, dpi)
+            panes[side] = Pane(pane.displayId, surface, width, height, dpi)
+            showStatus(side, "화면을 다시 만들 수 없습니다\n${hostName(host)}")
+            return
+        }
+        panes[side] = Pane(created, surface, width, height, dpi)
+        swappedAt[side] = System.currentTimeMillis()
+        surfaceLost.remove(side)
+        val generation = (generations[side] ?: 0) + 1
+        generations[side] = generation
+        hideStatus(side)
         Log.i(
             TAG,
-            "pane $side display $displayId reports ${if (measured) "${real.x}x${real.y}" else "no size"}, " +
-                "asked ${width}x$height, state ${display.state}"
+            "pane $side display ${pane.displayId} -> $created (#$generation, " +
+                "${width}x$height @$dpi, surface ${surface.hashCode()})"
         )
-        if (!measured) return
-        if (abs(real.x - width) <= SIZE_TOLERANCE && abs(real.y - height) <= SIZE_TOLERANCE) return
-        if (attempt >= MAX_READ_BACK_ATTEMPTS) return
-        val host = hosts[side] ?: return
-        Log.w(TAG, "pane $side kept ${real.x}x${real.y}; applying ${width}x$height again")
-        if (host.resize(displayId, width, height, density)) {
-            sizes[side] = intArrayOf(width, height, density)
+
+        val pkg = packages[side]
+        val moved = pkg != null && TaskMover.moveRootTasks(pane.displayId, created, pkg)
+        if (pkg != null && !moved) {
+            // The app could not be carried over: start it on the new display. A refusal here only
+            // concerns this pane, so it must not put the whole launcher on the free-form engine.
+            launchOnDisplay(side, pkg, created, reorder = true, fatal = false)
         }
-        scheduleReadBack(side, width, height, density, attempt + 1)
+        // The app has left the old display (moved) or a new instance is starting on the new one:
+        // its content is not needed any more.
+        val oldDisplay = pane.displayId
+        retiring.add(host to oldDisplay)
+        handler.postDelayed({
+            if (released) return@postDelayed
+            host.release(oldDisplay)
+        }, RELEASE_DELAY_MS)
+        scheduleReport(side, created)
+    }
+
+    /**
+     * Reads the display's real rectangle back once, a moment after it was created, and writes a log
+     * line — the one thing that tells a later reader whether the display kept the size it was made
+     * with. Nothing is detached or rebuilt from here.
+     */
+    private fun scheduleReport(side: Side, displayId: Int) {
+        if (!VERBOSE_REPORT) return
+        handler.postDelayed({
+            if (released) return@postDelayed
+            val display = try {
+                displayManager.getDisplay(displayId)
+            } catch (t: Throwable) {
+                null
+            }
+            if (display == null) {
+                Log.i(TAG, "pane $side display $displayId is not listed by DisplayManager")
+                return@postDelayed
+            }
+            val real = Point()
+            val measured = runCatching { display.getRealSize(real) }.isSuccess
+            val state = runCatching { display.state }.getOrNull()
+            Log.i(
+                TAG,
+                "pane $side display $displayId reports " +
+                    "${if (measured) "${real.x}x${real.y}" else "no size"}, " +
+                    "state ${state ?: "?"}"
+            )
+            val pane = panes[side]
+            if (pane != null && pane.displayId == displayId && measured &&
+                (abs(real.x - pane.width) > SIZE_TOLERANCE || abs(real.y - pane.height) > SIZE_TOLERANCE)
+            ) {
+                Log.w(
+                    TAG,
+                    "pane $side display $displayId kept ${real.x}x${real.y} " +
+                        "instead of ${pane.width}x${pane.height}"
+                )
+            }
+        }, REPORT_DELAY_MS)
     }
 
     private fun hostName(host: DisplayHost): String = when (host) {
@@ -504,18 +545,6 @@ class VirtualDisplayEngine(
         }
     }
 
-    /**
-     * Forgets one pane's display so the next pass builds a fresh one. Called only from
-     * [sync] after [MAX_RESIZE_FAILURES] refusals in a row — a display that has stopped answering
-     * has already lost its content, so nothing is thrown away that was still there.
-     */
-    private fun dropDisplay(side: Side) {
-        val displayId = displayIds.remove(side) ?: return
-        hosts[side]?.release(displayId)
-        surfaces.remove(side)
-        sizes.remove(side)
-    }
-
     private fun reportUnavailable() {
         if (unavailableReported) return
         unavailableReported = true
@@ -529,7 +558,7 @@ class VirtualDisplayEngine(
 
     override fun launch(side: Side, packageName: String) {
         packages[side] = packageName
-        val displayId = displayIds[side]
+        val displayId = panes[side]?.displayId
         if (displayId == null) {
             scheduleSync()
             return
@@ -546,26 +575,53 @@ class VirtualDisplayEngine(
     /**
      * Fullscreen hides the other pane: its display is frozen (`setDisplayState(false)`) instead of
      * being released or left drawing, so the app keeps its state and the GPU is not asked for a
-     * picture nobody sees. Nothing else in this engine touches the display state.
+     * picture nobody sees. Coming back unfreezes it and re-attaches the pane's current surface.
      */
     override fun setPaneVisible(side: Side, visible: Boolean) {
-        val displayId = displayIds[side] ?: return
-        hosts[side]?.setState(displayId, visible)
-        // Coming back from fullscreen: its rectangle may have changed while it was frozen.
-        if (visible) scheduleSync()
+        val pane = panes[side] ?: return
+        val host = hosts[side] ?: return
+        host.setState(pane.displayId, visible)
+        if (visible) {
+            val surface = viewOf(side).holder.surface
+            if (surface != null && surface.isValid) host.setSurface(pane.displayId, surface)
+            scheduleSync()
+        }
     }
 
     override fun setDensity(side: Side, dpi: Int) {
         densities[side] = dpi.coerceIn(Settings.MIN_DPI, Settings.MAX_DPI)
-        val view = viewOf(side)
-        if (view.width > 0 && view.height > 0) {
-            sync(side, view.width, view.height)
+        scheduleSync()
+    }
+
+    /**
+     * Gives this pane a brand-new display on demand (the pane menu's "화면 다시 그리기"): the
+     * escape hatch for a pane that came back black.
+     */
+    override fun redraw(side: Side) {
+        if (released) return
+        val old = panes.remove(side)
+        val host = hosts[side]
+        if (old != null && host != null) {
+            // Give the new display time to take the app before the old one takes it away.
+            retiring.add(host to old.displayId)
+            handler.postDelayed({ if (!released) host.release(old.displayId) }, RELEASE_DELAY_MS + 400L)
+            Log.i(TAG, "pane $side redraw requested; display ${old.displayId} will be released")
+        }
+        if (viewOf(side).width > 0 && viewOf(side).height > 0) {
+            scheduleSwap(side, 0L)
         } else {
             scheduleSync()
         }
     }
 
-    private fun launchOnDisplay(side: Side, packageName: String, displayId: Int, reorder: Boolean) {
+    private fun launchOnDisplay(
+        side: Side,
+        packageName: String,
+        displayId: Int,
+        reorder: Boolean,
+        /** When false, a refusal only shows on the pane; it does not condemn the whole engine. */
+        fatal: Boolean = true
+    ) {
         val intent = context.packageManager.getLaunchIntentForPackage(packageName)
         if (intent == null) {
             onMessage("앱을 찾을 수 없습니다: $packageName")
@@ -591,7 +647,7 @@ class VirtualDisplayEngine(
             // display never received the app. Name it on the pane and in the log.
             Log.e(TAG, "pane $side launch of $packageName on display $displayId failed", e)
             showStatus(side, "앱을 이 창에서 열 수 없습니다\n${e.javaClass.simpleName}")
-            if (!launchErrorReported) {
+            if (fatal && !launchErrorReported) {
                 launchErrorReported = true
                 reportUnavailable()
             }
@@ -602,30 +658,46 @@ class VirtualDisplayEngine(
         released = true
         handler.removeCallbacksAndMessages(null)
         for (side in listOf(Side.LEFT, Side.RIGHT)) {
-            val displayId = displayIds[side]
+            swaps.remove(side)?.let { handler.removeCallbacks(it) }
+            val displayId = panes[side]?.displayId
             if (displayId != null) hosts[side]?.release(displayId)
         }
-        displayIds.clear()
-        surfaces.clear()
+        panes.clear()
         hosts.clear()
-        sizes.clear()
+        // A display whose release was still pending would otherwise outlive the engine.
+        retiring.forEach { (owner, displayId) -> owner.release(displayId) }
+        retiring.clear()
         statusLabels.values.forEach { label -> (label.parent as? ViewGroup)?.removeView(label) }
         statusLabels.clear()
         packages.clear()
         waits.clear()
         surfaceWaits.clear()
-        resizeFailures.clear()
-        readBacks.clear()
+        swaps.clear()
+        swappedAt.clear()
+        surfaceLost.clear()
     }
 
     companion object {
         private const val TAG = "MNLauncher"
         private const val SYNC_DELAY_MS = 64L
-        private const val FOLLOW_UP_MS = 220L
-        private const val READ_BACK_DELAY_MS = 400L
 
-        /** One re-apply after a real size mismatch, then the pane is left alone. */
-        private const val MAX_READ_BACK_ATTEMPTS = 1
+        /** A replacement waits this long after the last pass that still saw a moved rectangle. */
+        private const val GEOMETRY_SETTLE_MS = 380L
+
+        /** A destroyed-and-recreated surface is replaced quickly; the pane is not visible then. */
+        private const val SURFACE_SWAP_MS = 120L
+
+        /** The old display is released once the app has had time to arrive on the new one. */
+        private const val RELEASE_DELAY_MS = 600L
+
+        private const val RETRY_MS = 250L
+
+        /** Do not replace the same pane's display more often than this (an app restart each time). */
+        private const val SWAP_COOLDOWN_MS = 900L
+
+        /** A read-back of the display's size, only for the log. */
+        private const val REPORT_DELAY_MS = 700L
+        private const val VERBOSE_REPORT = true
 
         /** A pixel of rounding between the pane rectangle and the display metrics is normal. */
         private const val SIZE_TOLERANCE = 2
@@ -635,9 +707,6 @@ class VirtualDisplayEngine(
 
         /** ~0.4 s of retries for a pane surface that is being re-created. */
         private const val MAX_SURFACE_WAITS = 6
-
-        /** Refusals in a row before a pane's display is rebuilt (it is not answering any more). */
-        private const val MAX_RESIZE_FAILURES = 2
 
         /** The platform-signed build's application id suffix (see app/build.gradle.kts). */
         private const val SYSTEMUID_SUFFIX = ".systemuid"

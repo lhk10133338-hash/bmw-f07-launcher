@@ -1,4 +1,4 @@
-# BMW MN-Launcher 4.4
+# BMW MN-Launcher 4.5
 
 BMW F07 2016 530d xDrive 5GT + MEKEDE MN-L (Android 14, 2560×720 울트라와이드) 전용
 개인용 홈 런처입니다. Kotlin + Android SDK만 사용하며 네이티브 라이브러리(.so)가 없어
@@ -9,7 +9,64 @@ ARM64 실기기와 x86_64 에뮬레이터(LD플레이어 등) 모두에서 설�
 4.1은 비율 변경 시 왼쪽 창이 까맣게 굳는 문제를 고치려 했지만 **양쪽 창이 모두 안 나오게 됐고**,
 4.2는 **4.1의 회귀를 되돌려 4.0의 출력 경로를 복원**한 뒤 4.0에서 실제로 문제였던 두 가지만 고친 버전입니다.
 부팅 동영상·사진 선택기가 없던 기기 문제도 함께 고쳤습니다.
+4.5는 **화면을 리사이즈하지 않고 갈아끼우는** 방식으로 바꿔 비율 조정·설정 왕복에서 창이 까매지지 않게 한 버전입니다(아래 4.5 절).
 상단 바·하단 바를 없애고 **화면 전체를 두 개의 분할 창**, 왼쪽에 **56dp 슬림 독**만 남겼습니다.
+
+## 4.5 — 창을 "리사이즈"하지 않고 "갈아끼움" (비율·메뉴 왕복에서 검정)
+
+실차 제보(2026-11-26, v4.4): 부팅 동영상·음악 자동시작·터치·분할은 모두 정상. 그런데
+① **비율을 조정하면 왼쪽 창이 까매지고**, ② **설정 같은 메뉴에 들어갔다 나오면 두 쪽 다 까매지고**,
+③ 그 상태에서 앱을 껐다 켜면 다시 정상 — 그리고 다시 메뉴에 들어가면 또 까매지는 반복이었습니다.
+
+### 1. 원본 카카런처는 표면을 재사용하지 않는다 (dexdump 재분석)
+`carcar-3.3.10`의 `classes.dex`를 `dexdump -d`로 다시 풀어 확인한 사실입니다.
+
+| 클래스 | 하는 일 |
+|---|---|
+| `La8/c0` | VirtualDisplayManager. 필드 `c` = `VirtualDisplay`, `q` = 현재 표면(Flutter `SurfaceProducer` 래퍼 `Lo1/b`), `r` = **보류된 옛 표면 목록** |
+| `La8/c0.b()` | **크기 변경 경로**: ① 현재 표면을 `r`에 넣고 ② **새 `SurfaceProducer`를 발급**해 ③ `setDefaultBufferSize(w,h)` ④ `setSurface(새 표면)` ⑤ 그 다음에 `VirtualDisplay.resize(w,h,dpi)` ⑥ `DisplayListener` 등록. 옛 표면은 256 ms 뒤 `release()` |
+| `La8/c0.a()` | 현재 표면을 `setSurface`하고 1024 ms 뒤 후속 패스를 예약 |
+| `La8/c0.d()/e()` | 숨김 = `setSurface(null)` + `setDisplayState(false)`, 복귀 = `setDisplayState(true)` + `setSurface(현재 표면)` |
+| `La8/b0` (`DisplayListener`) | `onDisplayAdded(내 id)` → `setDisplayState(true)`, `onDisplayChanged(내 id)` → 256 ms 뒤 재부착/재적용. `onDisplayRemoved`는 아무것도 안 함 |
+| `La8/z` (`Runnable`) | 위 지연 패스들(0·1·2·3)의 실제 동작. case 0 = 콜백+보류 표면 정리, case 1 = `a()` + 필요 시 `b()`, case 2 = 보류 표면 `release`, case 3 = 재부착 |
+| `La8/k` | AppView 래퍼. 크기 갱신(`e(DDDZLy4/b;)`)은 값이 1px 이내로 같고 배율도 같으면 콜백만 하고, 아니면 `La8/c0.b()`를 부릅니다 |
+
+핵심은 **원본이 기하(크기)가 바뀔 때마다 출력 표면 자체를 새로 발급한다**는 점입니다.
+그리고 AOSP `VirtualDisplayAdapter`를 보면 그 이유가 분명합니다.
+- `setSurfaceLocked(surface)`는 `mSurface != surface`일 때만 반영합니다(= **같은 Surface 객체를 다시 붙이는 것은 아무 일도 하지 않음**).
+- `resizeLocked(w,h,dpi)`도 표면을 다시 묶지 않고 `setDisplaySize`만 예약합니다.
+- 둘 다 `SurfaceControl.Transaction`으로 한 번에 반영되며, **디스플레이가 살아 있는 채로 표면/크기를 바꾸는 경로**입니다.
+
+이 펌웨어(MEKEDE MN-L, Android 14)에서는 그 "살아 있는 디스플레이를 다시 묶는" 경로가 먹히지 않습니다.
+그래서 원본의 `onDisplayChanged` 재부착(`a()`)도 **표면 객체가 같으면 AOSP 수준에서 no-op**이고,
+원본이 정상 동작하는 진짜 이유는 **새 표면 + 새 크기로 다시 묶기**입니다.
+우리 `SurfaceView`는 표면을 마음대로 새로 발급할 수 없으므로, v4.5는 사용자가 확인해 준 유일한 정상 경로를 씁니다 — **디스플레이를 새로 만드는 것**입니다.
+
+### 2. v4.5 엔진 (`VirtualDisplayEngine`)
+1. pane의 사각형이나 표면이 지금 디스플레이가 만들어진 값과 다르면 **정착(settle) 대기** 후(드래그는 초당 수십 번 레이아웃되므로 마지막 사각형만 유효) 디스플레이를 **새로 만듭니다**(`host.create`). 크기·표면이 같으면 아무 것도 하지 않습니다(±2px 허용).
+2. 새 디스플레이를 만든 뒤 **실행 중인 앱의 root task를 새 디스플레이로 옮깁니다**(`TaskMover` → `ActivityTaskManager.getService().moveRootTaskToDisplay(rootTaskId, displayId)`, 즉 `am display move-stack`과 같은 호출, 권한 `INTERNAL_SYSTEM_WINDOW`). 내비 경로·재생 상태가 유지됩니다.
+3. 옮기지 못하면(권한/펌웨어 거부) **새 디스플레이에 앱을 다시 실행**합니다(`setLaunchDisplayId` + `REORDER_TO_FRONT`). 이 경로 실패는 그 창에만 상태 문구를 남기고 엔진 전체를 자유창 모드로 몰지 않습니다.
+4. 그 다음에야 옛 디스플레이를 `release()` 합니다(600 ms 뒤). **생성 → 이동 → 해제 순서**를 지켜 앱 태스크가 먼저 사라지는 일이 없습니다.
+5. 같은 창을 0.9초 안에 두 번 갈아끼우지 않습니다(레이아웃이 흔들려도 앱이 반복 재시작되지 않게).
+
+### 3. 설정·앱 서랍은 "반투명 창"으로 (메뉴 왕복 근본 수정)
+원본 카카런처의 설정 화면은 Flutter **내부 화면**이라 런처 Activity가 멈추지 않고, 그래서 표면이 파괴될 일이 없습니다.
+우리는 별도 Activity였기 때문에 메뉴에 들어가면 `LauncherActivity`가 `onStop` → SurfaceView 표면 파괴 → 재부착이 안 먹혀 양쪽 다 까매졌습니다.
+- `SettingsActivity`·`AppDrawerActivity` 테마를 `Theme.BmwLauncher.Floating`(`windowIsTranslucent=true`, 배경 검정)으로 바꿨습니다.
+- 반투명 창은 아래 Activity를 가리지 않으므로 런처는 `onPause`만 되고 **표면이 그대로 살아 있습니다**. 화면은 이전과 똑같이 검정이고, 터치는 위 창이 받습니다.
+- 이 경로에서는 `onResume`이 가상화면을 건드리지 않습니다(표면 객체·크기가 같으면 no-op). 앱이 사라졌는지 보는 확인도 **표면이 실제로 파괴된 경우에만** 합니다.
+
+### 4. 그 밖의 변경
+- **독 숨김은 레이아웃을 바꾸지 않습니다**(`GONE` → `INVISIBLE`). 예전에는 독을 숨길 때마다 창이 56dp 넓어졌고, v4.5 엔진에서는 그때마다 디스플레이를 갈아끼워야 해서 **6초 자동 숨김마다 앱이 재시작**될 수 있었습니다. 이제 독이 숨으면 왼쪽에 56dp 검은 띠가 남고 창은 그대로입니다.
+- 창 메뉴에 **`화면 다시 그리기`** 를 넣었습니다. 어떤 이유로든 창이 까매졌을 때 그 창만 새 디스플레이로 다시 만듭니다(런처 재시작 불필요).
+- `WindowService.dontOverrideDisplayInfo(displayId)`는 **새로 만드는 모든 디스플레이**에 그대로 적용됩니다(`SystemDisplayHost.create`, `ShizukuControlService.createDisplay`).
+- 원본의 `onDisplayAdded → setDisplayState(true)`는 이식하지 않았습니다. v4.0~v4.4가 그 호출 없이 정상 출력했고, 검증되지 않은 상태 토글은 v4.1에서 창을 모두 잃은 전례가 있습니다. 대신 표시 장치 상태·실제 크기를 `MNLauncher` 태그로 남깁니다.
+
+### 5. 남는 트레이드오프
+- 비율 변경·전체화면 전환·화면 배율(dpi) 변경은 **디스플레이를 갈아끼우는 일**이라, root task 이동이 허용되면 앱이 그대로 유지되고, 거부되면 그 창의 앱이 한 번 다시 시작됩니다(음악은 서비스 재생이 계속, 내비는 경로를 다시 잡아야 함). 창이 까만 채로 남는 것보다는 낫다는 판단입니다.
+- 화면이 꺼졌다 켜지면(차량 슬립) 표면이 파괴되므로 깨어날 때 두 창이 다시 만들어집니다. 이전 버전에서는 이 경우 창이 까맣게 남았습니다.
+- 진단 로그(`adb logcat -s MNLauncher`): `pane left display 12 -> 15 (#2, 1264x720 @160 …)`, `TaskMover: moveRootTaskToDisplay(rootTask=…, display=…) -> true`, `pane left surface destroyed; display 12 kept`, `display 15 reports 1264x720, state 2`.
+
 
 ## 4.4 — `setFixedSize` 완전 제거 (비율 조정 시 양쪽 창 검정)
 

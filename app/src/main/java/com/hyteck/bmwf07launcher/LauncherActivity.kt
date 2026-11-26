@@ -348,7 +348,12 @@ class LauncherActivity : ScaledActivity() {
         dockHidden = hidden
         if (persist) settings.dockHidden = hidden
         binding.dock.animate().cancel()
-        binding.dock.visibility = if (hidden) View.GONE else View.VISIBLE
+        // v4.5: the dock is hidden, not removed from the layout. `GONE` used to move both panes by
+        // 56dp, and on the virtual-display engine a pane that changes rectangle has to be given a
+        // new display (this firmware never re-binds an existing one) — which would restart both
+        // apps every time the dock slid away, including on the 6 s auto-hide. `INVISIBLE` keeps the
+        // column reserved, so hiding the dock costs a black strip on the left and nothing else.
+        binding.dock.visibility = if (hidden) View.INVISIBLE else View.VISIBLE
         binding.dockEdge.visibility = if (hidden) View.VISIBLE else View.GONE
         handler.removeCallbacks(dockHideRunnable)
         if (!hidden) scheduleDockHide()
@@ -726,6 +731,16 @@ class LauncherActivity : ScaledActivity() {
                         initialDpi = dpiOf(side),
                         requiresVirtual = false
                     ) { dpi -> applyDpi(side, dpi) }
+                }
+            } else {
+                null
+            },
+            // v4.5: a pane that came back black is rebuilt (new display + app) on request.
+            onRedraw = if (virtual && pkg != null) {
+                {
+                    closePanePanels()
+                    engine?.redraw(side)
+                    toast(getString(R.string.pane_redraw))
                 }
             } else {
                 null

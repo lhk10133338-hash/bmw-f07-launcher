@@ -56,7 +56,8 @@ class PanePanel(
         onPickApp: () -> Unit,
         onFullscreen: () -> Unit,
         onClear: () -> Unit,
-        onScale: (() -> Unit)?
+        onScale: (() -> Unit)?,
+        onRedraw: (() -> Unit)? = null
     ) {
         val root = prepare()
         val narrow = isNarrow()
@@ -80,6 +81,10 @@ class PanePanel(
         }
         if (onScale != null) {
             entries.add(activity.getString(R.string.pane_scale) to onScale)
+        }
+        // v4.5: the manual way back from a pane that came back black without restarting anything.
+        if (onRedraw != null) {
+            entries.add(activity.getString(R.string.pane_redraw) to onRedraw)
         }
 
         if (narrow || entries.size < 4) {

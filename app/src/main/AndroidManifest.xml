@@ -86,13 +86,13 @@
             android:name=".SettingsActivity"
             android:exported="false"
             android:screenOrientation="landscape"
-            android:theme="@style/Theme.BmwLauncher" />
+            android:theme="@style/Theme.BmwLauncher.Floating" />
 
         <activity
             android:name=".AppDrawerActivity"
             android:exported="false"
             android:screenOrientation="landscape"
-            android:theme="@style/Theme.BmwLauncher" />
+            android:theme="@style/Theme.BmwLauncher.Floating" />
 
         <receiver
             android:name=".BootReceiver"

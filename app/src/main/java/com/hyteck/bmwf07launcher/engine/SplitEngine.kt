@@ -56,5 +56,13 @@ interface SplitEngine {
      */
     fun resume(sides: Set<Side>)
 
+    /**
+     * Brings one pane's picture back on demand (the pane menu's "화면 다시 그리기").
+     *
+     * Only an engine that draws the app inside the launcher can do this; the system engine leaves
+     * it alone and the pane menu does not offer it there.
+     */
+    fun redraw(side: Side) {}
+
     fun release()
 }

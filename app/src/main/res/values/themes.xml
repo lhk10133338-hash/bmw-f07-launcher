@@ -24,6 +24,23 @@
     -->
     <style name="Theme.BmwLauncher.Splash" parent="Theme.BmwLauncher" />
 
+    <!--
+      v4.5: the launcher's own screens (settings, app drawer) use a *translucent* window.
+
+      They used to be ordinary opaque activities, so opening one stopped the launcher behind it —
+      which destroys both pane SurfaceViews, and on the car unit a pane whose surface is replaced
+      never drew again ("설정에 들어갔다 나오면 두 쪽 다 까매진다"). A translucent window does not
+      occlude the activity below it, so the launcher stays started and both panes keep their
+      surfaces (and their picture) for the whole trip. The window still paints black, so the driver
+      sees exactly the same screen as before.
+    -->
+    <style name="Theme.BmwLauncher.Floating" parent="Theme.BmwLauncher">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@color/black</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+
     <style name="Theme.BmwLauncher.Dialog" parent="Theme.AppCompat.Dialog.Alert">
         <item name="android:windowBackground">@drawable/bg_dialog</item>
         <item name="android:windowNoTitle">true</item>
