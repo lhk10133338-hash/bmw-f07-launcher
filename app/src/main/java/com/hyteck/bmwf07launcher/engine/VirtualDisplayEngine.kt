@@ -104,6 +104,9 @@ class VirtualDisplayEngine(
     /** Consecutive `resize` refusals, so only a display that stopped answering is rebuilt. */
     private val resizeFailures = HashMap<Side, Int>()
 
+    /** The one pending read-back per pane, replaced on every new resize (a drag makes many). */
+    private val readBacks = HashMap<Side, Runnable>()
+
     /** Per side, so resizing the left display never swallows the right one's callback. */
     private val syncing = HashSet<Side>()
     private var unavailableReported = false
@@ -373,7 +376,10 @@ class VirtualDisplayEngine(
      * that is what took both panes off the screen.
      */
     private fun scheduleReadBack(side: Side, width: Int, height: Int, density: Int, attempt: Int) {
-        handler.postDelayed({ readBack(side, width, height, density, attempt) }, READ_BACK_DELAY_MS)
+        readBacks.remove(side)?.let { handler.removeCallbacks(it) }
+        val task = Runnable { readBack(side, width, height, density, attempt) }
+        readBacks[side] = task
+        handler.postDelayed(task, READ_BACK_DELAY_MS)
     }
 
     private fun readBack(side: Side, width: Int, height: Int, density: Int, attempt: Int) {
@@ -517,6 +523,7 @@ class VirtualDisplayEngine(
         waits.clear()
         surfaceWaits.clear()
         resizeFailures.clear()
+        readBacks.clear()
     }
 
     companion object {
