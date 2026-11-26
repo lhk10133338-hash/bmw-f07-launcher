@@ -88,6 +88,12 @@ class VirtualDisplayEngine(
     /** How often a pane waited for the Shizuku touch service before falling back to itself. */
     private val waits = HashMap<Side, Int>()
 
+    /** Short, bounded retries while a pane's SurfaceView is between two surfaces. */
+    private val surfaceWaits = HashMap<Side, Int>()
+
+    /** Last time a pane's display had to be rebuilt, so a missing display cannot spin. */
+    private val rebuiltAt = HashMap<Side, Long>()
+
     /** Per side, so resizing the left display never swallows the right one's callback. */
     private val syncing = HashSet<Side>()
     private var unavailableReported = false
@@ -262,11 +268,15 @@ class VirtualDisplayEngine(
             val holder = viewOf(side).holder
             val surface = holder.surface
             if (surface == null || !surface.isValid) {
-                // The pane's surface is being re-created; its own callback schedules the retry.
-                Log.i(TAG, "pane $side has no live surface yet")
-                scheduleSync()
+                // The pane's surface is being re-created. surfaceCreated/surfaceChanged schedule
+                // the real work; these few retries only cover a callback that was missed, and
+                // they stop so a launcher in the background does not poll forever.
+                val tries = (surfaceWaits[side] ?: 0) + 1
+                surfaceWaits[side] = tries
+                if (tries <= MAX_SURFACE_WAITS) scheduleSync()
                 return
             }
+            surfaceWaits.remove(side)
 
             val host = hostFor(side) ?: run {
                 // Still waiting for the Shizuku touch service.
@@ -280,7 +290,12 @@ class VirtualDisplayEngine(
             if (existing != null && displayManager.getDisplay(existing) == null) {
                 // The platform removed the display (a lost output surface does that). Its content
                 // went with it, so the display is rebuilt at the current size and the app is put
-                // back on it — otherwise the pane would stay black for good.
+                // back on it — otherwise the pane would stay black for good. A firmware that
+                // simply does not list this display would otherwise be rebuilt on every sync,
+                // so the rebuild is throttled to once per [REBUILD_INTERVAL_MS].
+                val now = System.currentTimeMillis()
+                if (now - (rebuiltAt[side] ?: 0L) < REBUILD_INTERVAL_MS) return
+                rebuiltAt[side] = now
                 Log.w(TAG, "pane $side display $existing is gone; rebuilding")
                 dropDisplay(side)
                 existing = null
@@ -475,6 +490,8 @@ class VirtualDisplayEngine(
         sizes.clear()
         packages.clear()
         waits.clear()
+        surfaceWaits.clear()
+        rebuiltAt.clear()
         visible.clear()
     }
 
@@ -492,5 +509,11 @@ class VirtualDisplayEngine(
 
         /** ~2.6 s of waiting for the Shizuku touch service before the local host is used. */
         private const val MAX_WAIT_TRIES = 40
+
+        /** ~0.4 s of retries for a pane surface that is being re-created. */
+        private const val MAX_SURFACE_WAITS = 6
+
+        /** A pane display the platform removed is rebuilt at most this often. */
+        private const val REBUILD_INTERVAL_MS = 1_500L
     }
 }
