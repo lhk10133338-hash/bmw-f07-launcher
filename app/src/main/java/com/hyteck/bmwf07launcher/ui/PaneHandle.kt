@@ -106,6 +106,9 @@ class PaneHandle @JvmOverloads constructor(
         scheduleDim()
     }
 
+    private fun hitHalfWidth(): Float =
+        (barWidth / 2f) + HIT_EXTRA_DP * density
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val cx = width / 2f
@@ -129,6 +132,11 @@ class PaneHandle @JvmOverloads constructor(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                // v4.0: the handle is an overlay on top of the app. Only the middle strip around
+                // the pill belongs to the launcher; a touch anywhere else on the bottom edge is
+                // left to the app underneath (returning false lets the FrameLayout dispatch it
+                // to the pane content).
+                if (abs(event.x - width / 2f) > hitHalfWidth()) return false
                 wake()
                 downY = event.y
                 downX = event.x
@@ -205,6 +213,9 @@ class PaneHandle @JvmOverloads constructor(
 
         /** How long the pill stays bright after the last touch. */
         private const val DIM_DELAY_MS = 4000L
+
+        /** Extra horizontal touch margin around the pill, so a thumb does not have to be exact. */
+        private const val HIT_EXTRA_DP = 24f
 
         /** Brightness once nothing has touched the pane for a while. */
         private const val DIM_ALPHA = 0.28f
