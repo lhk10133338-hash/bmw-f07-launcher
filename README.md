@@ -1,4 +1,4 @@
-# BMW MN-Launcher 4.2
+# BMW MN-Launcher 4.3
 
 BMW F07 2016 530d xDrive 5GT + MEKEDE MN-L (Android 14, 2560×720 울트라와이드) 전용
 개인용 홈 런처입니다. Kotlin + Android SDK만 사용하며 네이티브 라이브러리(.so)가 없어
@@ -10,6 +10,41 @@ ARM64 실기기와 x86_64 에뮬레이터(LD플레이어 등) 모두에서 설�
 4.2는 **4.1의 회귀를 되돌려 4.0의 출력 경로를 복원**한 뒤 4.0에서 실제로 문제였던 두 가지만 고친 버전입니다.
 부팅 동영상·사진 선택기가 없던 기기 문제도 함께 고쳤습니다.
 상단 바·하단 바를 없애고 **화면 전체를 두 개의 분할 창**, 왼쪽에 **56dp 슬림 독**만 남겼습니다.
+
+## 4.3 — 표면 타이밍 수정(양쪽 창 검정) · 런처 자체 폴더 탐색기
+
+실차 제보(2026-11-26): v4.2 설치 후 **독·분할선·회색 핸들은 정상이나 두 창 안이 모두 검정**,
+그리고 부팅 동영상을 고르려 하면 펌웨어 기본 선택기가 `LOCAL > Ts` 폴더만 보여 **파일이 있는 폴더로 갈 수 없음**.
+
+### 1. 검은 화면 — `setFixedSize`가 방금 파괴 예약한 표면을 화면에 넘기고 있었음
+v4.2는 `sync()` 안에서 `holder.setFixedSize(w,h)`를 호출한 **바로 그 패스에서** `host.create(...)`/`setSurface`/
+`resize`에 **그 순간의 구 `Surface`**를 넘겼습니다. `SurfaceView.setFixedSize`는 기존 Surface를
+`surfaceDestroyed`로 파괴하고 새 Surface를 **비동기로** 만든 뒤 `surfaceCreated → surfaceChanged`를
+다시 부릅니다. 즉 화면은 한 프레임 뒤 죽는 표면을 출력 표면으로 붙잡은 셈이고, 두 창 모두 검게 남습니다.
+
+- `surfaceFrame`이 이미 창 크기(`w×h`)와 같으면 **`setFixedSize`를 호출하지 않고** `pinned`만 기록합니다
+  (`match_parent` SurfaceView는 레이아웃이 끝나면 이미 그 크기 → 불필요한 표면 파괴 자체가 없음).
+- 크기가 달라 실제로 핀해야 할 때는 **핀한 뒤 즉시 `return`**. 새 표면이 `surfaceCreated`/`surfaceChanged`로
+  도착한 다음 패스에서 그 안정된 표면으로 `create`/`setSurface`/`resize`를 합니다.
+  같은 사각형에 대한 재시도는 2회로 제한(`MAX_PIN_ATTEMPTS`)해 표면 재생성 루프도 막습니다.
+- `surfaceCreated`도 직접 표면을 붙이지 않고 **스케줄만** 합니다(같은 재진입 규칙).
+- `SystemDisplayHost`·`LocalDisplayHost`의 `if (display.display == null) return` 가드 제거 — v4.0에는 없었고,
+  그 속성은 `resize`/`setSurface`가 동작하는지와 무관합니다. 각 호출은 자체 `try/catch`로만 감쌉니다.
+
+**진단**: 권한(`ADD_TRUSTED_DISPLAY`)이 없는데 SystemUID 빌드이거나, `create`가 실패하거나, 앱 실행이
+예외를 내면 **창 위에 짧은 상태 문구**(예: `시스템 권한 미인식 · ADD_TRUSTED_DISPLAY 없음`)가 남고
+`MNLauncher` 태그에 어느 경로(플랫폼 권한/Shizuku/자체 권한)였는지 로그가 찍힙니다. 정상일 때는 표시되지 않습니다.
+
+### 2. 부팅 동영상 — 런처 자체 폴더 탐색기 (`util/BootFileBrowser.kt`)
+- 선택 버튼 **짧게 누르면 바로 런처의 폴더 탐색기**가 열립니다. 펌웨어 기본 선택기는 다이얼로그의
+  **`시스템 선택기`** 보조 버튼으로만 남겼습니다(그 선택기가 `LOCAL > Ts`만 보여 주는 기기이므로).
+- 루트 목록: **내장 저장소** + `StorageManager.storageVolumes`(SD·USB, 이동식 표시) + `/storage/*` 및
+  `/mnt/media_rw/*`에 마운트된 볼륨 + 런처의 `intro` 폴더.
+- 폴더 탭 → 하위 폴더와 미디어 파일(`mp4·mkv·webm·3gp·avi·mov·m4v` / `jpg·jpeg·png·webp·bmp·gif·heic`)을
+  나열하고 `⬑ 상위 폴더`로 자유롭게 이동. 목록은 워커 스레드에서 만들어 큰 `DCIM`에서도 멈추지 않습니다.
+- `MANAGE_EXTERNAL_STORAGE`가 없으면 설정 화면으로 안내(거절해도 열리며 일부 폴더만 보임). SystemUID 빌드는
+  `android.uid.system`이라 그대로 읽습니다. 고른 파일은 기존처럼 `files/intro/`로 **복사**해 적용합니다.
+- `갤러리 색인` 버튼은 v4.2의 MediaStore+폴더 스캔 목록을 그대로 남긴 것입니다.
 
 ## 4.2 — v4.1 회귀 되돌림 · 왼쪽 창 리사이즈 · 부팅 로고 선택기
 
