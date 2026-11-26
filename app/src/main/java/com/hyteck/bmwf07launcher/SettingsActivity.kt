@@ -14,6 +14,7 @@ import androidx.appcompat.app.AlertDialog
 import com.hyteck.bmwf07launcher.data.AppRepository
 import com.hyteck.bmwf07launcher.data.Preset
 import com.hyteck.bmwf07launcher.data.Settings
+import com.hyteck.bmwf07launcher.engine.Privileges
 import com.hyteck.bmwf07launcher.util.ScaledActivity
 import com.hyteck.bmwf07launcher.databinding.ActivitySettingsBinding
 import com.hyteck.bmwf07launcher.databinding.ItemPresetEditBinding
@@ -320,7 +321,13 @@ class SettingsActivity : ScaledActivity() {
         } else {
             "접근성 서비스: 꺼짐"
         }
-        binding.engineDesc.text = "$base\n$accessibility"
+        // v4.0: which privileged route this installation can take (SystemUID APK vs. Shizuku).
+        val system = if (Privileges.canCreateTrustedDisplay(this)) {
+            "시스템 권한: 사용 가능 (SystemUID · 카카런처와 같은 직접 방식)"
+        } else {
+            "시스템 권한: 없음 (표준 APK · Shizuku 필요)"
+        }
+        binding.engineDesc.text = "$base\n$system\n$accessibility"
         updateShizukuLabel()
     }
 

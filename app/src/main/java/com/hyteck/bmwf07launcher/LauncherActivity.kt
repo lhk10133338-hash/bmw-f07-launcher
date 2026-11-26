@@ -28,6 +28,7 @@ import com.hyteck.bmwf07launcher.data.Settings
 import com.hyteck.bmwf07launcher.util.ScaledActivity
 import com.hyteck.bmwf07launcher.databinding.ActivityLauncherBinding
 import com.hyteck.bmwf07launcher.databinding.DockPresetBinding
+import com.hyteck.bmwf07launcher.engine.Privileges
 import com.hyteck.bmwf07launcher.engine.Side
 import com.hyteck.bmwf07launcher.engine.SplitEngine
 import com.hyteck.bmwf07launcher.engine.SystemSplitEngine
@@ -919,6 +920,9 @@ class LauncherActivity : ScaledActivity() {
     }
 
     private fun virtualTouchAvailable(): Boolean {
+        // v4.0: the SystemUID build holds INJECT_EVENTS itself, so the panes are touchable with no
+        // helper at all — CarCar Launcher's own situation.
+        if (Privileges.canInjectInput(this)) return true
         if (LauncherAccessibilityService.isEnabled(this)) return true
         if (ShizukuBridge.isReady()) return true
         // Shizuku is running and this app is allowed: the shell-side touch service is still
