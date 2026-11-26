@@ -24,6 +24,16 @@ interface SplitEngine {
 
     fun launch(side: Side, packageName: String)
 
+    /**
+     * Updates the desired packages for both panes without launching on the old displays yet,
+     * used when a preset also changes the split ratio so the apps start directly on the newly
+     * sized displays.
+     */
+    fun preparePackages(left: String?, right: String?) {
+        if (left != null) launch(Side.LEFT, left) else clear(Side.LEFT)
+        if (right != null) launch(Side.RIGHT, right) else clear(Side.RIGHT)
+    }
+
     fun clear(side: Side)
 
     fun setDensity(side: Side, dpi: Int)

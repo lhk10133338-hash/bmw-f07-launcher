@@ -460,6 +460,22 @@ class LauncherActivity : ScaledActivity() {
 
     private fun applyPreset(index: Int) {
         val preset = cachedPresets.getOrNull(index) ?: return
+        val inlineRatioChanges = engine?.inline == true && (preset.ratio != ratio || fullscreen != null)
+        if (inlineRatioChanges) {
+            leftPkg = preset.left
+            rightPkg = preset.right
+            settings.sessionLeft = leftPkg
+            settings.sessionRight = rightPkg
+            engine?.preparePackages(preset.left, preset.right)
+            setFullscreen(null)
+            setRatio(preset.ratio, persist = true, commit = true)
+            updateEmptyStates()
+            currentPreset = index
+            updatePresetHighlight()
+            preset.left?.let { scheduleAutoPlay(it) }
+            preset.right?.let { scheduleAutoPlay(it) }
+            return
+        }
         // Ratio first, then the apps (the order CarCar users found reliable).
         setFullscreen(null)
         setRatio(preset.ratio, persist = true, commit = false)
