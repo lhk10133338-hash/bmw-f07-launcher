@@ -1,4 +1,4 @@
-# BMW MN-Launcher 4.0
+# BMW MN-Launcher 4.1
 
 BMW F07 2016 530d xDrive 5GT + MEKEDE MN-L (Android 14, 2560×720 울트라와이드) 전용
 개인용 홈 런처입니다. Kotlin + Android SDK만 사용하며 네이티브 라이브러리(.so)가 없어
@@ -6,7 +6,43 @@ ARM64 실기기와 x86_64 에뮬레이터(LD플레이어 등) 모두에서 설�
 
 2.0은 CarCar Launcher(카카런처)의 실사용 구조를 기준으로 화면을 다시 만들었고,
 4.0은 그 **가상화면 엔진을 원본 APK에서 분석해 이식**하고 이름·시작 화면·여백·테마를 개편한 버전입니다.
+4.1은 실차에서 **비율을 바꾸면 왼쪽 창이 까맣게 굳던 문제**를 원본 리사이즈 순서에 맞춰 고친 버전입니다.
 상단 바·하단 바를 없애고 **화면 전체를 두 개의 분할 창**, 왼쪽에 **56dp 슬림 독**만 남겼습니다.
+
+## 4.1 — 비율 변경 시 창이 까맣게 굳는 문제 수정
+
+증상(2026-11-26, 실차 MEKEDE MN-L): `BMW-MN-Launcher-SystemUID.apk`로 분할은 정상인데
+**화면 비율을 바꾸면 왼쪽 창이 까만 화면으로 바뀌고 돌아오지 않음. 오른쪽 창은 정상.**
+
+### 원인
+1. `VirtualDisplayEngine.sync()`가 리사이즈마다 `SurfaceHolder.setFixedSize(w, h)`를 불렀습니다.
+   이 호출은 `SurfaceView`의 버퍼 크기를 **고정**해 버려서, 이후 레이아웃이 바뀌어도 버퍼가 뷰를
+   따라가지 않고, `SurfaceView`가 자기 표면 갱신 중에 부르는 콜백(`surfaceChanged`) **안에서**
+   다시 표면 갱신을 재진입시켜 표면과 가상화면이 서로 다른 크기에 묶여 버렸습니다.
+2. `surfaceChanged` 콜백 안에서 동기적으로 `resize()`를 호출했습니다(같은 재진입 문제).
+3. 표면이 사라질 때마다 `setSurface(null)`로 **출력 표면을 떼어냈습니다.** 원본은 이 순서를
+   쓰지 않으며, 출력이 떨어져 나간 창은 다시 붙여도 화면이 돌아오지 않습니다.
+4. 리사이즈 결과를 **확인하지 않았습니다.** 플랫폼이 화면을 제거했거나 다른 크기를 유지해도
+   엔진은 성공한 것으로 간주해 까만 창을 그대로 두었습니다.
+
+### 원본에서 확인한 리사이즈 순서 (`dexdump -d`)
+`La8/c0`.b(크기 변경 진입): 크기가 실제로 다를 때만 → 새 출력 표면 얻기 → `setSize(w,h)` →
+**`setSurface(surface)` (표면 먼저)** → **`VirtualDisplay.resize(w, h, dpi)` (크기 나중)**.
+`Lw7/g`.l(생성): `createVirtualDisplay(..., null, 0x109)` → 컨테이너 레이어를 `SurfaceView`의
+`SurfaceControl` 자식으로 붙이고 `IWindowSession.reparentDisplayContent`로 화면 콘텐츠를 그 레이어에
+합성 → `dontOverrideDisplayInfo`. `Lw7/g`.g(보이기): `setDisplayState(true)` → `m()`·`o()`(지오메트리).
+즉 원본은 **표면을 먼저 붙이고 크기를 나중에 적용**하며, 숨김은 `setDisplayState(false)` freeze입니다.
+
+### 수정 (VirtualDisplayEngine · SystemDisplayHost · DisplayHost · ShizukuControlService)
+- `setFixedSize` **완전 제거** — `SurfaceView`는 `match_parent`라 프레임워크가 버퍼를 창 크기에 맞춥니다.
+- `surfaceChanged`/`surfaceDestroyed`는 **스케줄만** 합니다(표면 갱신 재진입 없음).
+- 표면이 사라져도 **출력 표면을 떼지 않습니다**(`setSurface(null)` 금지). 새 표면이 오면 교체만 합니다.
+- 리사이즈 순서를 원본과 같이 **`setSurface` → `resize` → `dontOverrideDisplayInfo` → `setDisplayState(true)`**로 통일.
+- 생성 직후·리사이즈 후 `setDisplayState(true)`로 창을 켜 둡니다(원본 `e()`와 동일).
+- 리사이즈 400ms 뒤 **실제 화면 크기를 다시 읽어** 확인하고, 다르면 표면 재연결 + 크기 재적용을 최대 2회,
+  화면 자체가 사라졌으면 그 창만 새로 만들어 앱을 `REORDER_TO_FRONT`로 되돌립니다(앱 데이터 손실 최소화).
+  새 크기가 이미 들어온 경우에는 이 확인 작업이 끼어들지 않습니다.
+- `SystemDisplayHost.resize`·`LocalDisplayHost.resize`는 `display.display == null`인 죽은 화면을 실패로 보고합니다.
 
 ## 4.0 — 카카런처 가상화면 엔진 이식 · 이름/부팅로고/여백/테마 개편
 

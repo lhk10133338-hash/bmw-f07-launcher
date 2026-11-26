@@ -183,17 +183,19 @@ class ShizukuControlService : IShizukuControl.Stub() {
                         val id = display.display.displayId
                         displays[id] = display
                         WindowService.dontOverrideDisplayInfo(id)
-                        try {
-                            display.resize(width, height, dpi)
-                        } catch (t: Throwable) {
-                            // Optional: the size is already the requested one.
-                        }
+                        // v4.1: surface first, size after it (CarCar's order); the other way
+                        // round can leave the output and the display on different sizes.
                         if (surface != null) {
                             try {
                                 display.surface = surface
                             } catch (t: Throwable) {
                                 // The launcher reattaches its surface on the next callback.
                             }
+                        }
+                        try {
+                            display.resize(width, height, dpi)
+                        } catch (t: Throwable) {
+                            // Optional: the size is already the requested one.
                         }
                         return@onDisplayThread id
                     }
@@ -209,6 +211,7 @@ class ShizukuControlService : IShizukuControl.Stub() {
         if (width <= 0 || height <= 0) return false
         return onDisplayThread(false) {
             val display = displays[displayId] ?: return@onDisplayThread false
+            if (display.display == null) return@onDisplayThread false
             try {
                 display.resize(width, height, dpi)
                 true
