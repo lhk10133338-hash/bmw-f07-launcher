@@ -26,6 +26,7 @@ import com.hyteck.bmwf07launcher.databinding.ItemPresetEditBinding
 import com.hyteck.bmwf07launcher.service.LauncherAccessibilityService
 import com.hyteck.bmwf07launcher.shizuku.ShizukuBridge
 import com.hyteck.bmwf07launcher.ui.AppPickerDialog
+import com.hyteck.bmwf07launcher.ui.TopHud
 import com.hyteck.bmwf07launcher.util.BootFileBrowser
 import com.hyteck.bmwf07launcher.util.BootMediaPicker
 import com.hyteck.bmwf07launcher.util.applyImmersive
@@ -38,6 +39,9 @@ class SettingsActivity : ScaledActivity() {
     private lateinit var binding: ActivitySettingsBinding
     private lateinit var settings: Settings
     private lateinit var repo: AppRepository
+
+    /** v4.13: the BMW mark stays over this screen as well; the clock belongs to the launcher. */
+    private var hud: TopHud? = null
 
     /** v3.4: Shizuku's own permission dialog reports back here. */
     private val shizukuPermissionListener =
@@ -108,6 +112,7 @@ class SettingsActivity : ScaledActivity() {
         binding = ActivitySettingsBinding.inflate(layoutInflater)
         setContentView(binding.root)
         applyImmersive()
+        hud = TopHud.attach(this, showClock = false)
 
         settings = Settings(this)
         repo = AppRepository(this)
@@ -159,6 +164,8 @@ class SettingsActivity : ScaledActivity() {
     }
 
     override fun onDestroy() {
+        hud?.release()
+        hud = null
         ShizukuBridge.removeListener(shizukuStateListener)
         try {
             Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener)

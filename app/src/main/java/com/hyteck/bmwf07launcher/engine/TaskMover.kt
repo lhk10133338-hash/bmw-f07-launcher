@@ -170,6 +170,44 @@ internal object TaskMover {
     }
 
     /**
+     * Ends every process of [packageName] (v4.13).
+     *
+     * `removeTask` only takes the task off the display; a map app (Naver Map was the reported one)
+     * keeps its process, its `DisplayMetrics` and its GL surface cache and, started again a moment
+     * later, lays itself out with the **width it read the first time** — the pane showed the map at
+     * the old 50 % with the right 20 % empty after a 30:70 change (user report, 2026-11-27).
+     * Ending the process is the one thing that makes the next start read the new display from
+     * scratch.
+     *
+     * `ActivityManager.forceStopPackage` needs `FORCE_STOP_PACKAGES`, which the SystemUID build
+     * holds through its platform signature; the standard build gets a `SecurityException`, which is
+     * caught here and only returns false. Nothing about it can crash the launcher.
+     */
+    fun forceStop(context: android.content.Context, packageName: String): Boolean {
+        val manager = try {
+            context.getSystemService(android.content.Context.ACTIVITY_SERVICE)
+                as? android.app.ActivityManager
+        } catch (t: Throwable) {
+            null
+        } ?: return false
+        return try {
+            // @hide/@SystemApi, so it is reached by reflection: the SDK stub does not carry it.
+            val method = android.app.ActivityManager::class.java
+                .getMethod("forceStopPackage", String::class.java)
+            method.invoke(manager, packageName)
+            Log.i(TAG, "TaskMover: force-stopped $packageName so it re-reads its display")
+            true
+        } catch (t: Throwable) {
+            Log.i(
+                TAG,
+                "TaskMover: forceStopPackage($packageName) not allowed " +
+                    "(${t.javaClass.simpleName}); restarting it instead"
+            )
+            false
+        }
+    }
+
+    /**
      * The activity on top of [packageName]'s task on [displayId], or null when the platform does
      * not tell (v4.8).
      *

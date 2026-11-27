@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    v4.13: the BMW mark at the top centre and, next to its left edge, the Orbitron clock.
+
+    Both are passive pictures/text: nothing here is clickable, focusable or able to take a touch,
+    so a tap on the mark (or on the empty width it spans) reaches whatever launcher pane, handle,
+    dock tile or list row is underneath it. The exact pixel size is set at runtime by
+    `ui/TopHud` from the screen's short side (72 px at 2560×720), because the launcher's own
+    density changes with the "런처 화면 크기" setting.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/topHud"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@null"
+    android:clickable="false"
+    android:clipChildren="false"
+    android:clipToPadding="false"
+    android:focusable="false"
+    android:focusableInTouchMode="false"
+    android:importantForAccessibility="no">
+
+    <ImageView
+        android:id="@+id/topHudMark"
+        android:layout_width="wrap_content"
+        android:layout_height="72dp"
+        android:layout_gravity="top|center_horizontal"
+        android:adjustViewBounds="true"
+        android:clickable="false"
+        android:contentDescription="@null"
+        android:focusable="false"
+        android:focusableInTouchMode="false"
+        android:scaleType="fitCenter"
+        android:src="@drawable/hud_top_bar" />
+
+    <TextView
+        android:id="@+id/topHudClock"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center_vertical|end"
+        android:clickable="false"
+        android:focusable="false"
+        android:focusableInTouchMode="false"
+        android:fontFamily="@font/orbitron"
+        android:includeFontPadding="false"
+        android:importantForAccessibility="no"
+        android:shadowColor="#CC000000"
+        android:shadowDx="1"
+        android:shadowDy="1"
+        android:shadowRadius="4"
+        android:text=""
+        android:textColor="#FFFFFFFF"
+        android:textSize="19sp" />
+
+</FrameLayout>

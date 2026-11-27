@@ -11,7 +11,8 @@
         android:layout_height="match_parent"
         android:orientation="horizontal">
 
-        <!-- Slim left dock: clock, saved split presets, save, app drawer, settings. -->
+        <!-- Slim left dock: saved split presets, save, app drawer, settings. v4.13: the clock and
+             date that used to sit at the top of the dock moved to the top HUD (view_top_hud). -->
         <LinearLayout
             android:id="@+id/dock"
             android:layout_width="56dp"
@@ -19,33 +20,6 @@
             android:background="@drawable/bg_dock"
             android:gravity="center_horizontal"
             android:orientation="vertical">
-
-            <TextView
-                android:id="@+id/clockText"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:gravity="center"
-                android:text="00:00"
-                android:textColor="@color/text_primary"
-                android:textSize="14sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/dateText"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="1dp"
-                android:gravity="center"
-                android:text=""
-                android:textColor="@color/text_secondary"
-                android:textSize="8sp" />
-
-            <View
-                android:layout_width="16dp"
-                android:layout_height="2dp"
-                android:layout_marginTop="6dp"
-                android:background="@color/m_blue" />
 
             <ScrollView
                 android:id="@+id/presetScroll"

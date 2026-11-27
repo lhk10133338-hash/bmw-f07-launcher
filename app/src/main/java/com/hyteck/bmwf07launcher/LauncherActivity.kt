@@ -42,13 +42,11 @@ import com.hyteck.bmwf07launcher.shizuku.ShizukuBridge
 import com.hyteck.bmwf07launcher.touch.VirtualTouchRouter
 import com.hyteck.bmwf07launcher.ui.PanePanel
 import com.hyteck.bmwf07launcher.ui.RatioMenu
+import com.hyteck.bmwf07launcher.ui.TopHud
 import com.hyteck.bmwf07launcher.util.applyImmersive
 import com.hyteck.bmwf07launcher.util.dp
 import com.hyteck.bmwf07launcher.util.setOnLongPressAction
 import com.hyteck.bmwf07launcher.util.toast
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /**
  * CarCar-Launcher style home screen:
@@ -156,17 +154,21 @@ class LauncherActivity : ScaledActivity() {
     }
 
     private val handler = Handler(Looper.getMainLooper())
-    private val clockFormat = SimpleDateFormat("HH:mm", Locale.KOREA)
-    private val dateFormat = SimpleDateFormat("M/d EEE", Locale.KOREA)
     private val presetRows = ArrayList<DockPresetBinding>()
     private var cachedPresets: List<Preset> = emptyList()
 
-    private val clockTick = object : Runnable {
-        override fun run() {
-            updateClock()
-            handler.postDelayed(this, 20_000L)
-        }
-    }
+    // ------------------------------------------------------------ top HUD (v4.13)
+
+    /**
+     * The BMW mark that stays over every launcher screen and the Orbitron clock beside it.
+     *
+     * The clock is hidden — the mark never is — while a menu is in front of the user: a pane's
+     * inline menu or app picker, the dock's preset menu, the rename box and the ratio menu. Each
+     * of them announces itself with [hudClock] under its own token, so two menus opening one after
+     * the other cannot leave the clock hidden after both are gone.
+     */
+    private var hud: TopHud? = null
+    private val hudClockOff = HashSet<String>()
 
     private val dockHideRunnable = Runnable { setDockHidden(true, persist = false) }
 
@@ -179,6 +181,12 @@ class LauncherActivity : ScaledActivity() {
         binding = ActivityLauncherBinding.inflate(layoutInflater)
         setContentView(binding.root)
         applyImmersive()
+
+        // v4.13: the mark is added as the last child of the content view, so it is drawn over the
+        // panes and their inline menus. It starts hidden and is shown at the end of onCreate (or
+        // when the boot intro ends), so the intro is never covered. Attaching it can never take
+        // the screen down: TopHud.attach returns null instead of throwing.
+        hud = TopHud.attach(this, showClock = false)?.also { it.setVisible(false) }
 
         settings = Settings(this)
         applyTheme()
@@ -202,9 +210,7 @@ class LauncherActivity : ScaledActivity() {
         applyDockSide(force = true)
         updatePresetList()
         updateEmptyStates()
-        updateClock()
         setDockHidden(settings.dockHidden, persist = false)
-        handler.post(clockTick)
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -227,6 +233,7 @@ class LauncherActivity : ScaledActivity() {
                 startSession()
             }
         }
+        if (!introShowing) showHud()
         scheduleDockHide()
     }
 
@@ -379,10 +386,28 @@ class LauncherActivity : ScaledActivity() {
         return super.dispatchTouchEvent(ev)
     }
 
-    private fun updateClock() {
-        val now = Date()
-        binding.clockText.text = clockFormat.format(now)
-        binding.dateText.text = dateFormat.format(now)
+    // ------------------------------------------------------------------- top HUD
+
+    /**
+     * Puts the mark up and lets the clock decide for itself whether it may be seen. Called when a
+     * screen that covered the launcher comes back and when the boot intro ends.
+     */
+    private fun showHud() {
+        hud?.setVisible(true)
+        updateHudClock()
+    }
+
+    /**
+     * Turns the clock on or off under [reason]. The mark itself never leaves: only the boot intro
+     * hides it (through [TopHud.setVisible]).
+     */
+    private fun hudClock(reason: String, off: Boolean) {
+        if (off) hudClockOff.add(reason) else hudClockOff.remove(reason)
+        updateHudClock()
+    }
+
+    private fun updateHudClock() {
+        hud?.setClockVisible(hudClockOff.isEmpty() && !introShowing)
     }
 
     // --------------------------------------------------------------- presets
@@ -499,6 +524,8 @@ class LauncherActivity : ScaledActivity() {
 
     private fun showPresetMenu(index: Int) {
         val preset = cachedPresets.getOrNull(index) ?: return
+        // v4.13: a menu is being read → the clock steps aside, the mark does not.
+        hudClock(HUD_MENU, true)
         val items = arrayOf(
             getString(R.string.preset_menu_run),
             getString(R.string.preset_menu_rename),
@@ -542,6 +569,7 @@ class LauncherActivity : ScaledActivity() {
                 }
             }
             .setNegativeButton(R.string.close, null)
+            .setOnDismissListener { hudClock(HUD_MENU, false) }
             .show()
     }
 
@@ -557,6 +585,7 @@ class LauncherActivity : ScaledActivity() {
             setPadding(dp(12), dp(4), dp(12), 0)
             addView(input, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
+        hudClock(HUD_MENU, true)
         AlertDialog.Builder(this, R.style.Theme_BmwLauncher_Dialog)
             .setTitle(R.string.preset_rename_title)
             .setView(container)
@@ -566,6 +595,7 @@ class LauncherActivity : ScaledActivity() {
                 updatePresetList()
             }
             .setNegativeButton(R.string.cancel, null)
+            .setOnDismissListener { hudClock(HUD_MENU, false) }
             .show()
     }
 
@@ -606,11 +636,13 @@ class LauncherActivity : ScaledActivity() {
             setRatio(value, persist = commit, commit = commit)
         }
         binding.divider.onOpenRatioMenu = {
+            hudClock(HUD_MENU, true)
             RatioMenu.show(
                 this,
                 ratio,
                 { picked -> setRatio(picked, persist = true, commit = true) },
-                { swapPanes() }
+                { swapPanes() },
+                onDismiss = { hudClock(HUD_MENU, false) }
             )
         }
     }
@@ -741,6 +773,8 @@ class LauncherActivity : ScaledActivity() {
     private fun closePanePanels() {
         leftPanel.close()
         rightPanel.close()
+        // v4.13: a menu is gone → the clock may come back (the mark never left).
+        hudClock(HUD_MENU, false)
     }
 
     private fun paneTitle(side: Side): String =
@@ -749,6 +783,8 @@ class LauncherActivity : ScaledActivity() {
     /** The handle menu of one pane, drawn inside that pane only. */
     private fun openPaneMenu(side: Side) {
         closePanePanels()
+        // v4.13: "메뉴 들어가면 시계는 안 나오게끔, 마크는 계속" — the mark stays in place.
+        hudClock(HUD_MENU, true)
         val pkg = pkgOf(side)
         val virtual = engine?.supportsDpi == true
         val subtitle = if (pkg == null) getString(R.string.pane_empty) else repo.labelOf(pkg)
@@ -799,6 +835,7 @@ class LauncherActivity : ScaledActivity() {
      */
     private fun openPanePicker(side: Side, onPicked: ((String?) -> Unit)? = null) {
         closePanePanels()
+        hudClock(HUD_MENU, true)
         val pkg = pkgOf(side)
         panelOf(side).showPicker(
             title = paneTitle(side),
@@ -1285,6 +1322,9 @@ class LauncherActivity : ScaledActivity() {
     override fun onResume() {
         super.onResume()
         applyImmersive()
+        // v4.13: coming back from the drawer, the settings screen or another window (the reverse
+        // camera) leaves the mark where it was; only the clock's menu rule is re-evaluated.
+        if (!introShowing) showHud()
         applyTheme()
         ShizukuBridge.refresh()
         if (appliedUiScale != 0 && appliedUiScale != settings.uiScale) {
@@ -1371,6 +1411,9 @@ class LauncherActivity : ScaledActivity() {
     override fun onDestroy() {
         cancelAutoPlay()
         handler.removeCallbacksAndMessages(null)
+        hud?.release()
+        hud = null
+        hudClockOff.clear()
         ShizukuBridge.removeListener(shizukuStateListener)
         binding.introView.onFinished = null
         binding.introView.stop()
@@ -1401,6 +1444,9 @@ class LauncherActivity : ScaledActivity() {
             return
         }
         introShowing = true
+        // v4.13: the boot intro is the one screen the mark must not cover; it comes back in
+        // finishIntro, once the intro layer has faded out.
+        hud?.setVisible(false)
         binding.introLayer.visibility = View.VISIBLE
         binding.introLayer.alpha = 1f
         binding.introLayer.setBackgroundColor(Color.BLACK)
@@ -1555,6 +1601,7 @@ class LauncherActivity : ScaledActivity() {
                 binding.introLayer.visibility = View.GONE
                 binding.introLayer.alpha = 1f
                 if (!isFinishing && !isDestroyed) {
+                    showHud()
                     startSession()
                     scheduleBounds(commit = true)
                 }
@@ -1566,6 +1613,9 @@ class LauncherActivity : ScaledActivity() {
         const val EXTRA_PACKAGE = "extra_package"
         const val EXTRA_SIDE = "extra_side"
         private const val TAG = "MNLauncher"
+
+        /** v4.13: token of "a menu is in front of the user" — the top HUD hides its clock for it. */
+        private const val HUD_MENU = "menu"
         private const val RESTORE_DELAY_MS = 280L
         private const val SESSION_START_DELAY_MS = 140L
 

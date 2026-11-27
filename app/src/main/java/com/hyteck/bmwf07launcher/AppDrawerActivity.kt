@@ -15,6 +15,7 @@ import com.hyteck.bmwf07launcher.util.ScaledActivity
 import com.hyteck.bmwf07launcher.databinding.ActivityAppDrawerBinding
 import com.hyteck.bmwf07launcher.databinding.ItemAppBinding
 import com.hyteck.bmwf07launcher.databinding.ItemSectionBinding
+import com.hyteck.bmwf07launcher.ui.TopHud
 import com.hyteck.bmwf07launcher.util.applyImmersive
 import com.hyteck.bmwf07launcher.util.toast
 
@@ -27,6 +28,9 @@ class AppDrawerActivity : ScaledActivity() {
     private lateinit var binding: ActivityAppDrawerBinding
     private lateinit var settings: Settings
     private lateinit var repo: AppRepository
+
+    /** v4.13: the BMW mark stays over this screen as well; the clock belongs to the launcher. */
+    private var hud: TopHud? = null
 
     /** The bars come back after a dialog or a focus change: hide them again at once (v3.2). */
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -44,6 +48,7 @@ class AppDrawerActivity : ScaledActivity() {
         binding = ActivityAppDrawerBinding.inflate(layoutInflater)
         setContentView(binding.root)
         applyImmersive()
+        hud = TopHud.attach(this, showClock = false)
 
         settings = Settings(this)
         repo = AppRepository(this)
@@ -67,6 +72,12 @@ class AppDrawerActivity : ScaledActivity() {
     override fun finish() {
         super.finish()
         noTransition()
+    }
+
+    override fun onDestroy() {
+        hud?.release()
+        hud = null
+        super.onDestroy()
     }
 
     @Suppress("DEPRECATION")

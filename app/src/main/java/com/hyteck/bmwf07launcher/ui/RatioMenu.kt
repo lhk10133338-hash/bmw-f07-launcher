@@ -27,7 +27,9 @@ object RatioMenu {
         activity: Activity,
         current: Int,
         onPick: (Int) -> Unit,
-        onSwap: () -> Unit
+        onSwap: () -> Unit,
+        // v4.13: the screen behind the dialog hides its clock while this menu is up.
+        onDismiss: () -> Unit = {}
     ) {
         val dialog = Dialog(activity, R.style.Theme_BmwLauncher_Dialog)
         // What the closed dialog should do, run once its window is gone.
@@ -36,6 +38,7 @@ object RatioMenu {
             val action = pending
             pending = null
             action?.invoke()
+            onDismiss()
         }
         val content = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
