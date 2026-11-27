@@ -654,6 +654,10 @@ class LauncherActivity : ScaledActivity() {
      * ends, so dragging can never restart another app.
      */
     private fun scheduleBounds(commit: Boolean) {
+        // v4.11: a confirmed change is announced the moment it happens. The layout pass that
+        // follows it, a frame or two later, then replaces the pane's display without the settle a
+        // divider drag needs (see VirtualDisplayEngine.markCommitted).
+        if (commit) engine?.markCommitted()
         handler.removeCallbacks(boundsRunnable)
         if (commit || engine?.inline == true) {
             handler.postDelayed(boundsRunnable, if (commit) 0L else 80L)

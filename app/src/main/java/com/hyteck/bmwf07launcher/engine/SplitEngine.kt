@@ -47,6 +47,16 @@ interface SplitEngine {
     fun applyBounds(left: Rect, right: Rect, commit: Boolean)
 
     /**
+     * The user just confirmed a change (a preset, the ratio menu, a fullscreen toggle, a return, a
+     * new app), so a pane that has to be rebuilt may be rebuilt without the settle a drag needs.
+     *
+     * Sent the moment the change happens, before the layout has even moved: the pass that follows
+     * a layout change then knows it is not in the middle of a divider drag. Only an engine that
+     * draws the apps inside the launcher has a use for it, so the default does nothing.
+     */
+    fun markCommitted() {}
+
+    /**
      * Keep-out edges for the launcher's dock, in screen pixels.
      *
      * A floating window must never be placed over the dock: the dock's own buttons would lose

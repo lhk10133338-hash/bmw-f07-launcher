@@ -513,11 +513,23 @@ class VirtualDisplayEngine(
     override fun applyBounds(left: Rect, right: Rect, commit: Boolean) {
         // The SurfaceViews already have the exact pane size; the pass below compares that size with
         // the size the pane's display was created at and replaces the display if it moved.
-        if (commit) {
-            val now = System.currentTimeMillis()
-            commitAt[Side.LEFT] = now
-            commitAt[Side.RIGHT] = now
-        }
+        if (commit) markCommitted()
+        scheduleSync()
+    }
+
+    /**
+     * v4.11: a confirmed change settles quickly, a pass in the middle of a divider drag does not.
+     *
+     * The launcher calls this the moment the user confirms something — before the layout has
+     * moved — so the pass that the layout change then starts uses [COMMIT_SETTLE_MS] instead of
+     * [GEOMETRY_SETTLE_MS]. Without it the virtual-display engine could only have every pass
+     * treated as committed (which took the drag debounce away) or every pass treated as a drag
+     * (which made a preset take a third of a second longer to appear).
+     */
+    override fun markCommitted() {
+        val now = System.currentTimeMillis()
+        commitAt[Side.LEFT] = now
+        commitAt[Side.RIGHT] = now
         scheduleSync()
     }
 
