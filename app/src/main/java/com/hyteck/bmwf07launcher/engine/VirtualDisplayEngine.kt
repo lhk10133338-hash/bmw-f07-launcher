@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Point
 import android.graphics.Rect
+import android.graphics.SurfaceTexture
 import android.hardware.display.DisplayManager
 import android.os.Handler
 import android.os.Looper
@@ -13,8 +14,7 @@ import android.view.Display
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.Surface
-import android.view.SurfaceHolder
-import android.view.SurfaceView
+import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -256,8 +256,8 @@ import kotlin.math.abs
  */
 class VirtualDisplayEngine(
     private val context: Context,
-    private val leftSurface: SurfaceView,
-    private val rightSurface: SurfaceView,
+    private val leftSurface: TextureView,
+    private val rightSurface: TextureView,
     private val settings: Settings,
     private val onMessage: (String) -> Unit,
     private val onUnavailable: (String) -> Unit,
@@ -296,11 +296,12 @@ class VirtualDisplayEngine(
     private class PendingSwap(
         val host: DisplayHost,
         val oldPane: Pane,
-        val oldView: SurfaceView
+        val oldView: TextureView
     )
 
-    private var leftView: SurfaceView = leftSurface
-    private var rightView: SurfaceView = rightSurface
+    private var leftView: TextureView = leftSurface
+    private var rightView: TextureView = rightSurface
+    private val surfaces = HashMap<TextureView, Surface>()
 
     private val displayManager =
         context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
@@ -404,8 +405,8 @@ class VirtualDisplayEngine(
         register(Side.RIGHT, rightView)
     }
 
-    private fun register(side: Side, view: SurfaceView) {
-        // v3.4: the pane's SurfaceView is the only place the display's app can be touched, so
+    private fun register(side: Side, view: TextureView) {
+        // v3.4: the pane's TextureView is the only place the display's app can be touched, so
         // every event that lands on it is forwarded to the display the pane is showing.
         view.isClickable = true
         view.setOnClickListener { /* the touch itself is forwarded in the listener below */ }
@@ -421,11 +422,6 @@ class VirtualDisplayEngine(
                     gestures[side]
                 }
                 val target = gesture?.displayId ?: displayId
-                // v4.11: the pane's SurfaceView can already have its new size while the display the
-                // touch is addressed to still has the old one (a display is replaced right after a
-                // ratio change, a fullscreen toggle or a return). The event is mapped onto the
-                // pixels of the display it really goes to, so a tap in that moment cannot land on
-                // another button of the app.
                 val mapped = mapToDisplay(
                     touched,
                     gesture?.width ?: pane.width,
@@ -444,12 +440,17 @@ class VirtualDisplayEngine(
             if (event.actionMasked == MotionEvent.ACTION_UP) touched.performClick()
             true
         }
-        view.holder.addCallback(object : SurfaceHolder.Callback {
-            override fun surfaceCreated(holder: SurfaceHolder) {
+        view.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(st: SurfaceTexture, width: Int, height: Int) {
                 if (released || viewOf(side) !== view) return
-                // v4.3: only schedule. The surface this callback announces is created inside
-                // SurfaceView's own update; the pass runs when it is complete.
-                Log.i(TAG, "pane $side surface created")
+                if (width > 0 && height > 0) st.setDefaultBufferSize(width, height)
+                surfaces.remove(view)?.release()
+                try {
+                    val s = Surface(st)
+                    if (s.isValid) surfaces[view] = s
+                } catch (_: Throwable) {
+                }
+                Log.i(TAG, "pane $side texture available (${width}x$height)")
                 if (pendingSwaps.containsKey(side)) {
                     handler.post { syncSide(side) }
                 } else {
@@ -457,8 +458,9 @@ class VirtualDisplayEngine(
                 }
             }
 
-            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, width: Int, height: Int) {
                 if (released || viewOf(side) !== view) return
+                if (width > 0 && height > 0) st.setDefaultBufferSize(width, height)
                 if (pendingSwaps.containsKey(side)) {
                     handler.post { syncSide(side) }
                 } else {
@@ -466,17 +468,17 @@ class VirtualDisplayEngine(
                 }
             }
 
-            override fun surfaceDestroyed(holder: SurfaceHolder) {
-                if (released || viewOf(side) !== view) return
-                // The display is left alone here: it is not detached and not released, so its app
-                // keeps running. The new surface this pane gets next is a different object, and
-                // the next pass replaces the display onto it ([replaceDisplay]) — the one route
-                // this firmware has always drawn.
-                Log.i(TAG, "pane $side surface destroyed; display ${panes[side]?.displayId} kept")
+            override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                surfaces.remove(view)?.release()
+                if (released || viewOf(side) !== view) return true
+                Log.i(TAG, "pane $side texture destroyed; display ${panes[side]?.displayId} kept")
                 surfaceLost.add(side)
                 scheduleSync()
+                return true
             }
-        })
+
+            override fun onSurfaceTextureUpdated(st: SurfaceTexture) = Unit
+        }
         view.addOnLayoutChangeListener { changed, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
             if (released || viewOf(side) !== changed) return@addOnLayoutChangeListener
             if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
@@ -485,15 +487,31 @@ class VirtualDisplayEngine(
         }
     }
 
-    private fun viewOf(side: Side): SurfaceView =
+    private fun viewOf(side: Side): TextureView =
         if (side == Side.LEFT) leftView else rightView
+
+    private fun surfaceOf(view: TextureView): Surface? {
+        val st = view.surfaceTexture ?: return null
+        val existing = surfaces[view]
+        if (existing != null && existing.isValid) return existing
+        val created = try {
+            Surface(st)
+        } catch (_: Throwable) {
+            null
+        }
+        if (created != null && created.isValid) {
+            surfaces[view] = created
+            return created
+        }
+        return null
+    }
 
     /**
      * A copy of [event] expressed in a display of [displayWidth] × [displayHeight] pixels, or null
      * when the pane's view already has exactly that size (the normal case, which costs nothing).
      */
     private fun mapToDisplay(
-        view: SurfaceView,
+        view: TextureView,
         displayWidth: Int,
         displayHeight: Int,
         event: MotionEvent
@@ -523,7 +541,7 @@ class VirtualDisplayEngine(
         return copy
     }
 
-    private fun setView(side: Side, view: SurfaceView) {
+    private fun setView(side: Side, view: TextureView) {
         if (side == Side.LEFT) leftView = view else rightView = view
     }
 
@@ -650,7 +668,7 @@ class VirtualDisplayEngine(
         if (pendingSwaps.containsKey(side)) return true
         val view = viewOf(side)
         if (!view.isShown) return false
-        val surface = view.holder.surface
+        val surface = surfaceOf(view)
         if (surface == null || !surface.isValid) return false
         val width = view.width
         val height = view.height
@@ -718,9 +736,9 @@ class VirtualDisplayEngine(
         val height = view.height
         if (width <= 0 || height <= 0) return
 
-        val surface = view.holder.surface
+        val surface = surfaceOf(view)
         if (surface == null || !surface.isValid) {
-            // Between two surfaces. surfaceCreated/surfaceChanged schedule the real pass; these
+            // Between two surfaces. surfaceTextureListener schedules the real pass; these
             // few retries only cover a callback that was missed.
             val tries = (surfaceWaits[side] ?: 0) + 1
             surfaceWaits[side] = tries
@@ -869,7 +887,7 @@ class VirtualDisplayEngine(
         if (!view.isShown) return
         val width = view.width
         val height = view.height
-        val surface = view.holder.surface
+        val surface = surfaceOf(view)
         val pane = panes[side]
         val host = hosts[side] ?: hostFor(side) ?: run {
             scheduleSwap(side, RETRY_MS)
@@ -969,10 +987,10 @@ class VirtualDisplayEngine(
         side: Side,
         host: DisplayHost,
         oldPane: Pane,
-        oldView: SurfaceView,
+        oldView: TextureView,
         parent: ViewGroup
     ) {
-        val newView = SurfaceView(context).apply {
+        val newView = TextureView(context).apply {
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -986,7 +1004,7 @@ class VirtualDisplayEngine(
             if (released) return@Runnable
             val stale = pendingSwaps.remove(side) ?: return@Runnable
             pendingTimeouts.remove(side)
-            Log.w(TAG, "pane $side fresh SurfaceView timed out; restoring previous view")
+            Log.w(TAG, "pane $side fresh TextureView timed out; restoring previous view")
             setView(side, stale.oldView)
             (newView.parent as? ViewGroup)?.removeView(newView)
             if (swapping == side) {
@@ -1004,7 +1022,7 @@ class VirtualDisplayEngine(
     private fun finishPendingSwap(
         side: Side,
         pending: PendingSwap,
-        newView: SurfaceView,
+        newView: TextureView,
         width: Int,
         height: Int,
         dpi: Int,
@@ -1012,20 +1030,55 @@ class VirtualDisplayEngine(
     ) {
         pendingTimeouts.remove(side)?.let { handler.removeCallbacks(it) }
         pendingSwaps.remove(side)
-        val created = pending.host.create(displayName(side), width, height, dpi, surface)
-        if (created < 0) {
-            Log.e(
+        val oldId = pending.oldPane.displayId
+        val wasLost = surfaceLost.contains(side)
+        if (displayAlive(pending.host, oldId)) {
+            // v4.15 (CarCar La8/c0 pattern): keep the live virtual display and swap in a fresh
+            // TextureView/SurfaceTexture with setDefaultBufferSize + setSurface + resize. The app
+            // never restarts and DisplayContent resizes cleanly to the new pane width.
+            newView.surfaceTexture?.setDefaultBufferSize(width, height)
+            pending.host.setSurface(oldId, surface)
+            pending.host.resize(oldId, width, height, dpi)
+            if (!frozenPanes.contains(side)) pending.host.setState(oldId, true)
+            panes[side] = Pane(oldId, surface, width, height, dpi)
+            swappedAt[side] = System.currentTimeMillis()
+            surfaceLost.remove(side)
+            lossRepairs.remove(side)
+            hideStatus(side)
+            Log.i(
                 TAG,
-                "pane $side could not create a replacement display via ${hostName(pending.host)}; " +
-                    "restoring previous view"
+                "pane $side resized display $oldId in place to ${width}x$height @$dpi " +
+                    "(wasLost=$wasLost, surface=${surface.hashCode()})"
             )
-            setView(side, pending.oldView)
-            (newView.parent as? ViewGroup)?.removeView(newView)
-            pending.host.resize(pending.oldPane.displayId, width, height, dpi)
-            showStatus(side, "화면을 다시 만들 수 없습니다\n${hostName(pending.host)}")
+            if (wasLost) {
+                packages[side]?.let { pkg ->
+                    wakeOnDisplay(side, pkg, oldId)
+                    scheduleRewake(side, pkg, oldId)
+                }
+            }
+            handler.postDelayed({
+                if (!released) {
+                    (pending.oldView.parent as? ViewGroup)?.removeView(pending.oldView)
+                    surfaces.remove(pending.oldView)?.release()
+                }
+            }, 650L)
         } else {
-            completeSwap(side, pending.host, pending.oldPane, created, surface, width, height, dpi)
-            (pending.oldView.parent as? ViewGroup)?.removeView(pending.oldView)
+            val created = pending.host.create(displayName(side), width, height, dpi, surface)
+            if (created < 0) {
+                Log.e(
+                    TAG,
+                    "pane $side could not create a replacement display via ${hostName(pending.host)}; " +
+                        "restoring previous view"
+                )
+                setView(side, pending.oldView)
+                (newView.parent as? ViewGroup)?.removeView(newView)
+                pending.host.resize(oldId, width, height, dpi)
+                showStatus(side, "화면을 다시 만들 수 없습니다\n${hostName(pending.host)}")
+            } else {
+                completeSwap(side, pending.host, pending.oldPane, created, surface, width, height, dpi)
+                (pending.oldView.parent as? ViewGroup)?.removeView(pending.oldView)
+                surfaces.remove(pending.oldView)?.release()
+            }
         }
         if (swapping == side) {
             swapping = null
@@ -1335,7 +1388,7 @@ class VirtualDisplayEngine(
             // v4.1, so the fullscreen toggle now says "show" only to the pane it hid.
             if (frozenPanes.remove(side)) {
                 host.setState(pane.displayId, true)
-                val surface = viewOf(side).holder.surface
+                val surface = surfaceOf(viewOf(side))
                 if (surface != null && surface.isValid) host.setSurface(pane.displayId, surface)
             }
             scheduleSync()
@@ -1534,9 +1587,11 @@ class VirtualDisplayEngine(
         surfaceLost.clear()
         frozenPanes.clear()
         gestures.clear()
+        surfaces.values.forEach { try { it.release() } catch (_: Throwable) {} }
+        surfaces.clear()
     }
 
-    private fun restoreOriginalSurface(current: SurfaceView, original: SurfaceView) {
+    private fun restoreOriginalSurface(current: TextureView, original: TextureView) {
         if (current === original) return
         val parent = current.parent as? ViewGroup ?: return
         val index = parent.indexOfChild(current).coerceAtLeast(0)

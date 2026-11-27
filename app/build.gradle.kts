@@ -25,8 +25,8 @@ android {
         applicationId = "com.hyteck.bmwf07launcher"
         minSdk = 26
         targetSdk = 34
-        versionCode = 23
-        versionName = "4.14"
+        versionCode = 24
+        versionName = "4.15"
     }
 
     /**

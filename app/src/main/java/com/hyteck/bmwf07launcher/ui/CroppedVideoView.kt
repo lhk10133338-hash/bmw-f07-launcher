@@ -3,6 +3,8 @@ package com.hyteck.bmwf07launcher.ui
 import android.content.Context
 import android.graphics.SurfaceTexture
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Handler
@@ -44,6 +46,7 @@ class CroppedVideoView @JvmOverloads constructor(
 
     private var player: MediaPlayer? = null
     private var surface: Surface? = null
+    private var audioFocusRequest: AudioFocusRequest? = null
     private var pendingUri: Uri? = null
     private var videoWidth = 0
     private var videoHeight = 0
@@ -115,9 +118,40 @@ class CroppedVideoView @JvmOverloads constructor(
         player = null
         surface?.release()
         surface = null
+        abandonAudioFocus()
         pendingUri = null
         videoWidth = 0
         videoHeight = 0
+    }
+
+    private fun requestAudioFocus() {
+        try {
+            val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+            val attrs = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                .build()
+            val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                .setAudioAttributes(attrs)
+                .build()
+            val res = am.requestAudioFocus(req)
+            audioFocusRequest = req
+            val vol = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+            val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            Log.i("MNLauncher", "intro audioFocus=$res musicVol=$vol/$max")
+        } catch (t: Throwable) {
+            Log.w("MNLauncher", "intro requestAudioFocus failed: ${t.message}")
+        }
+    }
+
+    private fun abandonAudioFocus() {
+        val req = audioFocusRequest ?: return
+        audioFocusRequest = null
+        try {
+            val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+            am.abandonAudioFocusRequest(req)
+        } catch (_: Throwable) {
+        }
     }
 
     private fun open(uri: Uri) {
@@ -163,6 +197,7 @@ class CroppedVideoView @JvmOverloads constructor(
         } catch (ignored: Exception) {
             // Volume control is optional.
         }
+        requestAudioFocus()
         try {
             mp.start()
         } catch (ignored: Exception) {
