@@ -1,4 +1,4 @@
-# BMW MN-Launcher 4.9
+# BMW MN-Launcher 4.10
 
 BMW F07 2016 530d xDrive 5GT + MEKEDE MN-L (Android 14, 2560×720 울트라와이드) 전용
 개인용 홈 런처입니다. Kotlin + Android SDK만 사용하며 네이티브 라이브러리(.so)가 없어
@@ -13,8 +13,53 @@ ARM64 실기기와 x86_64 에뮬레이터(LD플레이어 등) 모두에서 설�
 4.6은 4.5에서 남은 **"비율을 바꾸면 화면 전체가 터치 먹통"** 문제를 고친 버전입니다(아래 4.6 절).
 4.7은 비율 변경 때 **새 `SurfaceView`를 만들어** 디스플레이를 갈아끼우는 버전이고(아래 4.7 절),
 4.8은 **다른 화면(후진 카메라·다른 앱·차량 순정 화면)에서 런처로 돌아오면 두 창이 모두 까매지던** 문제를 고친 버전이고(아래 4.8 절),
-4.9는 **음악 자동 재생이 어쩔 때는 안 되던** 문제를 고친 버전입니다(아래 4.9 절).
+4.9는 **음악 자동 재생이 어쩔 때는 안 되던** 문제를 고친 버전이고(아래 4.9 절),
+4.10은 **후진 카메라·다른 화면에서 돌아오면 여전히 창이 까매지던** 문제를 비율 변경과 같은 경로(새 `SurfaceView` 교체)로 고친 버전입니다(아래 4.10 절).
 상단 바·하단 바를 없애고 **화면 전체를 두 개의 분할 창**, 왼쪽에 **56dp 슬림 독**만 남겼습니다.
+
+## 4.10 — 후진·외부 화면 복귀도 "새 `SurfaceView` 교체"로
+
+실차 제보(2026-11-27, v4.9): *"비율 조정은 잘 되는데, 음, 후진 카메라 갔다가 다시 돌아오면 까맣게 변하는 현상은
+변함이 없어. 다시 확인해 봐."*
+
+### 원인 — 잘 되는 경로와 안 되는 경로를 가른 조건 한 줄
+
+4.7에서 넣은 새 `SurfaceView` 교체는 비율 변경에서 100% 동작합니다. 그런데 그 경로를 고르는 조건이
+`swapDisplay()`의 `pane.surface === surface` 였습니다. 비율 변경은 `SurfaceView`가 그대로라 표면 객체도 같아
+이 조건이 참이 되고, **후진에서 돌아올 때는 `surfaceDestroyed` → `surfaceCreated`로 표면 객체가 새로 생겨**
+조건이 거짓이 됩니다. 그래서 복귀는 조건에 걸리지 않고 **한 번 표면을 잃은 `SurfaceView`에 새 디스플레이를
+다시 붙이는** 경로(4.5·4.8에서 "이 펌웨어는 그리지 않는다"고 확인한 바로 그 경로)로 내려갔습니다.
+새 코드는 `repairPane()`까지 고쳐 두었지만, 그 아래에서 실제로 디스플레이를 만드는 `swapDisplay()`가
+4.7의 조건을 그대로 들고 있었던 것이 원인입니다.
+
+### 수정 (`engine/VirtualDisplayEngine.kt`)
+
+- **표면 손실도 새 `SurfaceView` 교체로**: `swapDisplay()`는 `pane.surface === surface` **또는
+  `surfaceLost`** 일 때 `mintSurfaceView()`를 탑니다. `replaceDisplayNow()`의 조기 반환 조건에도
+  손실 기록을 넣어, 사각형과 표면 객체가 같아 보여도 손실이 있으면 재건합니다(비율 변경 때 성공한 경로와 동일).
+- **깨우기 인텐트에서 `ACTION_MAIN` 제거**: `wakeOnDisplay()`는 최상단 액티비티를 **컴포넌트만 지정한**
+  `Intent()` + `NEW_TASK | REORDER_TO_FRONT`로 깨웁니다. `ACTION_MAIN` 필터가 없는 서브 액티비티도 깨어나고,
+  지도 경로·재생 화면이 앱 첫 화면으로 바뀌지 않습니다.
+- **약 220ms 뒤 한 번 더 깨우기** (`scheduleRewake`): 태스크 이동과 첫 깨우기가 디스플레이 생성과 같은
+  프레임에 일어나 새 디스플레이가 아직 배치되기 전에 씹힐 수 있습니다. 220ms 뒤 그 디스플레이의 태스크가
+  남아 있으면 최상단 액티비티를 다시 깨우고, 태스크가 사라졌으면 런치 인텐트(`reorder`)로 엽니다.
+  엔진이 release됐거나 그 사이 창이 다른 디스플레이로 바뀌었으면 건너뜁니다.
+- **손실 재건 횟수 제한**(`MAX_LOSS_REPAIRS = 3`): 새 디스플레이를 만들 수 없는 기기에서 1초마다 `SurfaceView`를
+  새로 만들고 앱을 재시작하는 무한 반복을 막습니다. 3회를 넘으면 손실 기록을 지우고 지금 표면에 다시 붙입니다.
+- **커밋 플래그 만료**(`COMMIT_WINDOW_MS = 2000`): `onResume()`은 `scheduleBounds(commit = true)`와
+  `scheduleRestore()`를 동시에 겁니다. `commitPending`이 무기한 남아 있으면 **나중의 분할바 드래그가 드래그
+  도중에 디스플레이를 갈아끼우게** 되므로(그래서 `GEOMETRY_SETTLE_MS`가 있습니다), 커밋은 도착한 뒤 2초
+  동안만 짧은 정착(60ms)을 씁니다. 복귀와 커밋된 bounds는 창마다 하나뿐인 `scheduleSwap` 슬롯에서 만나므로
+  한 번의 교체로 합쳐집니다.
+- 로그(`adb logcat -s MNLauncher`): `came back (newSurface=…, lost=…, alive=…)`, `rebuilding on a fresh
+  SurfaceView after a surface loss (1/3)`, `came back with the pane; waking it on display …`, `re-waking …`.
+
+### APK 파일명 규칙 (v4.10부터)
+
+배포 파일 이름 뒤에 버전을 붙입니다.
+
+- `BMW-MN-Launcher_v4.10.apk` (standard)
+- `BMW-MN-Launcher-SystemUID_v4.10.apk` (systemuid, 실차 설치용)
 
 ## 4.9 — 음악 자동 재생이 어쩔 때만 되던 문제
 
@@ -566,6 +611,9 @@ gradle assembleSystemuidDebug   # SystemUID APK만
 산출물:
 - `app/build/outputs/apk/standard/debug/app-standard-debug.apk`
 - `app/build/outputs/apk/systemuid/debug/app-systemuid-debug.apk`
+
+배포용 파일명은 뒤에 버전을 붙입니다(v4.10부터): `BMW-MN-Launcher_v4.10.apk`,
+`BMW-MN-Launcher-SystemUID_v4.10.apk`.
 
 GitHub Actions로 뽑을 때는 저장소 루트의 `GITHUB_ACTIONS_BUILD.yml` 내용을
 `.github/workflows/build.yml`로 복사해 Actions에서 실행하면 됩니다.

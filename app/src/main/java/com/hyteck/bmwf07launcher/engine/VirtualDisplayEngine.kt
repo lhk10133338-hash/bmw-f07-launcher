@@ -114,6 +114,37 @@ import kotlin.math.abs
  *     step is retried a few times, because a launcher that returns is laid out and shown only
  *     after `onResume` has already run.
  *
+ * ## v4.10 — a return from another window takes the same road as a ratio change (2026-11-27)
+ *
+ * The car unit tested v4.9: "비율 조정은 잘 되는데, 음, 후진 카메라 갔다가 다시 돌아오면 까맣게 변하는 현상은
+ * 변함이 없어. 다시 확인해 봐." So v4.7's route is the one that draws — a *new* `SurfaceView` with its own
+ * BufferQueue, a display created on it — and the return still did not take it.
+ *
+ * The reason was the condition that chose that route: `swapDisplay()` only minted a new `SurfaceView`
+ * when the pane's record was bound to the *same* `Surface` object (`pane.surface === surface`), which
+ * is what a ratio change looks like. A return from the camera is the opposite: `surfaceDestroyed` and
+ * then `surfaceCreated` give the SurfaceView a **different** Surface, so the pane went down the
+ * re-point path — `host.create(..., surface)` on the SurfaceView that had just lost a surface, the
+ * one thing this firmware has never drawn into (v4.5, v4.8).
+ *
+ * v4.10 therefore treats a reported surface loss exactly like a ratio change:
+ *
+ *  1. [swapDisplay] mints a new `SurfaceView` when the pane's surface moved **or** the pane reported a
+ *     loss, and [replaceDisplayNow] no longer skips a pane whose geometry still matches while a loss
+ *     is on record. The count of loss-driven rebuilds per pane is bounded, so a firmware that refuses
+ *     every new display cannot turn a return into an endless mint-and-restart loop.
+ *  2. The app is woken on its new display with an **explicit component and no `ACTION_MAIN` action**
+ *     ([wakeOnDisplay]); an app whose top activity has no MAIN filter is still resumed, and its main
+ *     activity is not pulled in front of an open route or player.
+ *  3. The first wake can land before the new display and its surface have settled, so one more wake
+ *     follows about 200 ms later ([scheduleRewake]) — only for the same display generation and only
+ *     while the engine is alive.
+ *  4. A committed bounds pass ([applyBounds] with `commit = true`, which `onResume` sends at the same
+ *     moment it asks for the repair) now expires after [COMMIT_WINDOW_MS] instead of staying set until
+ *     some later pass consumes it, so it can never make a later divider drag swap a display mid-gesture.
+ *     The repair and the committed pass both end in the same `scheduleSwap` slot per pane, so one
+ *     replacement goes ahead and the other request simply re-times it.
+ *
  * ## What else is kept from v4.0–v4.4
  *
  *  - The first display of a pane is created exactly the way v4.0 created it and the way CarCar
@@ -219,6 +250,16 @@ class VirtualDisplayEngine(
     /** True when the latest [applyBounds] came from a committed choice (ratio menu, preset, release). */
     private var commitPending = false
 
+    /** When that committed choice arrived; it only settles quickly for a moment (v4.10). */
+    private var commitAt = 0L
+
+    /**
+     * Loss-driven display rebuilds per pane (v4.10). A return rebuilds a pane on a brand-new
+     * SurfaceView; if the platform cannot give that pane a display, the count stops the retries
+     * instead of minting a view and restarting the app every second forever.
+     */
+    private val lossRepairs = HashMap<Side, Int>()
+
     private var unavailableReported = false
     private var launchErrorReported = false
     private var privilegeReported = false
@@ -227,7 +268,6 @@ class VirtualDisplayEngine(
     private val syncRunnable = Runnable {
         syncSide(Side.LEFT)
         syncSide(Side.RIGHT)
-        commitPending = false
     }
 
     init {
@@ -354,7 +394,10 @@ class VirtualDisplayEngine(
     override fun applyBounds(left: Rect, right: Rect, commit: Boolean) {
         // The SurfaceViews already have the exact pane size; the pass below compares that size with
         // the size the pane's display was created at and replaces the display if it moved.
-        if (commit) commitPending = true
+        if (commit) {
+            commitPending = true
+            commitAt = System.currentTimeMillis()
+        }
         scheduleSync()
     }
 
@@ -512,10 +555,17 @@ class VirtualDisplayEngine(
         val lossReported = surfaceLost.contains(side)
         if (!surfaceReplaced && !geometryMoved && !lossReported) return
 
+        // v4.10: a committed pass keeps its short settle only for a moment. `onResume` sends one at
+        // the same instant it asks for the return repair, and a flag that stayed set would later
+        // make a divider drag replace a display in the middle of the gesture (GEOMETRY_SETTLE_MS
+        // exists for exactly that).
+        val committed = commitPending &&
+            System.currentTimeMillis() - commitAt <= COMMIT_WINDOW_MS
+
         // A drag makes dozens of these passes; only the rectangle it settles on is worth a display.
         val settleMs = when {
             surfaceReplaced || lossReported -> SURFACE_SWAP_MS
-            commitPending -> COMMIT_SETTLE_MS
+            committed -> COMMIT_SETTLE_MS
             else -> GEOMETRY_SETTLE_MS
         }
         scheduleSwap(side, settleMs)
@@ -559,6 +609,7 @@ class VirtualDisplayEngine(
         panes[side] = Pane(created, surface, width, height, dpi)
         swappedAt[side] = System.currentTimeMillis()
         surfaceLost.remove(side)
+        lossRepairs.remove(side)
         generations[side] = (generations[side] ?: 0) + 1
         hideStatus(side)
         Log.i(
@@ -626,9 +677,13 @@ class VirtualDisplayEngine(
             createDisplay(side, host, width, height, dpi, surface)
             return
         }
+        // v4.10: a pane whose surface was reported lost is rebuilt even when its rectangle and
+        // Surface object still match — otherwise a return from another window would decide there
+        // is nothing to do and leave the pane on its dead binding.
         if (pane.surface === surface &&
             abs(pane.width - width) <= SIZE_TOLERANCE &&
-            abs(pane.height - height) <= SIZE_TOLERANCE && pane.dpi == dpi
+            abs(pane.height - height) <= SIZE_TOLERANCE && pane.dpi == dpi &&
+            !surfaceLost.contains(side)
         ) {
             return
         }
@@ -649,12 +704,39 @@ class VirtualDisplayEngine(
         // intermittent blackouts on ratio change). Mint a fresh SurfaceView so the new display
         // gets a brand-new BufferQueue at the exact new size, while the old display retires on
         // its own old Surface.
-        if (pane.surface === surface) {
+        //
+        // v4.10: a pane coming back from behind another window takes this same route. Its
+        // SurfaceView was destroyed and re-created, so `pane.surface !== surface` — but a display
+        // made on a SurfaceView that has already lost one surface never draws here (v4.5, v4.8),
+        // which is why the ratio path worked and the return did not.
+        val lost = surfaceLost.contains(side)
+        if (pane.surface === surface || lost) {
             val oldView = viewOf(side)
             val parent = oldView.parent as? ViewGroup
             if (parent != null) {
-                mintSurfaceView(side, host, pane, oldView, parent)
-                return
+                if (!lost) {
+                    mintSurfaceView(side, host, pane, oldView, parent)
+                    return
+                }
+                val repairs = (lossRepairs[side] ?: 0) + 1
+                lossRepairs[side] = repairs
+                if (repairs <= MAX_LOSS_REPAIRS) {
+                    Log.i(
+                        TAG,
+                        "pane $side rebuilding on a fresh SurfaceView after a surface loss " +
+                            "($repairs/$MAX_LOSS_REPAIRS)"
+                    )
+                    mintSurfaceView(side, host, pane, oldView, parent)
+                    return
+                }
+                // Bounded: stop rebuilding on the loss alone and rebind what the pane has now, so
+                // a firmware that refuses the new display cannot loop here forever.
+                Log.w(
+                    TAG,
+                    "pane $side gave up rebuilding on a surface loss after $repairs attempts; " +
+                        "re-pointing display ${pane.displayId}"
+                )
+                surfaceLost.remove(side)
             }
         }
         val created = host.create(displayName(side), width, height, dpi, surface)
@@ -757,6 +839,8 @@ class VirtualDisplayEngine(
         // v4.8: read the loss before clearing it — a pane that comes back from behind another
         // window needs its app woken on the new display even when moving the task succeeded.
         val wasSurfaceLost = surfaceLost.remove(side)
+        // The pane has a working display again; the loss-driven rebuild budget starts over.
+        lossRepairs.remove(side)
         panes[side] = Pane(created, surface, width, height, dpi)
         swappedAt[side] = System.currentTimeMillis()
         val generation = (generations[side] ?: 0) + 1
@@ -781,6 +865,10 @@ class VirtualDisplayEngine(
             // until it is resumed: bring it back to the front of its own display (v4.8).
             Log.i(TAG, "pane $side app $pkg came back with the pane; waking it on display $created")
             wakeOnDisplay(side, pkg, created)
+            // v4.10: the display and its surface have just been created, so the first wake can be
+            // swallowed by a window manager that has not laid the new display out yet. One more
+            // wake a moment later is what makes the return reliable.
+            scheduleRewake(side, pkg, created)
         }
         // The app has left the old display (moved) or a new instance is starting on the new one:
         // its content is not needed any more.
@@ -981,7 +1069,10 @@ class VirtualDisplayEngine(
             launchOnDisplay(side, packageName, displayId, reorder = true, fatal = false)
             return
         }
-        val intent = Intent(Intent.ACTION_MAIN).apply {
+        // v4.10: no ACTION_MAIN any more. It is not needed to start an explicit component, and a
+        // top activity that has no MAIN filter in its manifest was the one case the wake could
+        // not resume at all.
+        val intent = Intent().apply {
             component = top
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
         }
@@ -997,6 +1088,31 @@ class VirtualDisplayEngine(
             Log.w(TAG, "pane $side wake of ${top.flattenToShortString()} failed (${e.javaClass.simpleName})")
             launchOnDisplay(side, packageName, displayId, reorder = true, fatal = false)
         }
+    }
+
+    /**
+     * Wakes a pane's app once more, a moment after the display it came back on was created
+     * (v4.10).
+     *
+     * Moving the task and the first wake happen in the same frame that creates the display, and a
+     * stopped app on a display the window manager has not laid out yet can miss it. The second
+     * wake is skipped when the engine was released or the pane already has another display, so a
+     * quick second return cannot be woken twice on the wrong display. The app's top activity is
+     * woken again (not its main activity), and only when its task is really gone from the display
+     * is the launch intent used.
+     */
+    private fun scheduleRewake(side: Side, packageName: String, displayId: Int) {
+        handler.postDelayed({
+            if (released) return@postDelayed
+            if (panes[side]?.displayId != displayId) return@postDelayed
+            if (packages[side] != packageName) return@postDelayed
+            Log.i(TAG, "pane $side re-waking $packageName on display $displayId")
+            if (TaskMover.hasTask(displayId, packageName)) {
+                wakeOnDisplay(side, packageName, displayId)
+            } else {
+                launchOnDisplay(side, packageName, displayId, reorder = true, fatal = false)
+            }
+        }, WAKE_RETRY_MS)
     }
 
     private fun launchOnDisplay(
@@ -1061,6 +1177,9 @@ class VirtualDisplayEngine(
         pendingTimeouts.values.forEach { handler.removeCallbacks(it) }
         pendingTimeouts.clear()
         pendingSwaps.clear()
+        lossRepairs.clear()
+        commitPending = false
+        commitAt = 0L
         restoreOriginalSurface(leftView, leftSurface)
         restoreOriginalSurface(rightView, rightSurface)
         leftView = leftSurface
@@ -1126,6 +1245,15 @@ class VirtualDisplayEngine(
         /** A pane that a return found not laid out yet is looked at again a few times (v4.8). */
         private const val MAX_RESUME_PASSES = 6
         private const val RESUME_RETRY_MS = 350L
+
+        /** How many times a pane may be rebuilt on a reported surface loss before giving up (v4.10). */
+        private const val MAX_LOSS_REPAIRS = 3
+
+        /** The second wake after a return, once the new display has settled (v4.10). */
+        private const val WAKE_RETRY_MS = 220L
+
+        /** A committed bounds pass settles quickly only this long after it arrived (v4.10). */
+        private const val COMMIT_WINDOW_MS = 2000L
 
         /** The platform-signed build's application id suffix (see app/build.gradle.kts). */
         private const val SYSTEMUID_SUFFIX = ".systemuid"
