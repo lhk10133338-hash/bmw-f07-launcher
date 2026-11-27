@@ -238,28 +238,35 @@ object BootMediaPicker {
     fun copyIn(context: Context, uri: Uri, fallbackName: String): File? {
         val dir = File(context.filesDir, INTRO_DIR)
         if (!dir.isDirectory && !dir.mkdirs()) return null
-        // One boot logo at a time: the previous copy is dropped so app storage does not grow.
-        runCatching { dir.listFiles()?.forEach { if (it.isFile) it.delete() } }
         val name = fileNameOf(context, uri, fallbackName)
-        val target = File(dir, name)
+        // v4.11: the new file is read into a temporary name first. The old copy used to be deleted
+        // before the new one was read, so re-picking the intro that is already in this folder — it is
+        // one of the browser's roots — deleted the only good file and then failed to copy it back.
+        val temp = File(dir, TEMP_NAME)
+        runCatching { temp.delete() }
         val copied = runCatching {
             context.contentResolver.openInputStream(uri)?.use { input ->
-                target.outputStream().use { output -> input.copyTo(output, 64 * 1024) }
+                temp.outputStream().use { output -> input.copyTo(output, 64 * 1024) }
             }
-            target.length() > 0L
+            temp.length() > 0L
         }.getOrDefault(false)
-        if (copied) return target
-        // A scanned hit is a plain file: read it directly if the resolver refused the handle.
-        val source = uri.path
-        if (source != null) {
-            val direct = runCatching {
-                File(source).copyTo(target, overwrite = true)
-                target.length() > 0L
-            }.getOrDefault(false)
-            if (direct) return target
+        if (!copied) {
+            // A scanned hit is a plain file: read it directly if the resolver refused the handle.
+            val source = uri.path
+            if (source != null) {
+                runCatching { File(source).copyTo(temp, overwrite = true) }
+            }
         }
-        runCatching { target.delete() }
-        return null
+        if (!temp.isFile || temp.length() <= 0L) {
+            runCatching { temp.delete() }
+            return null
+        }
+        // One boot logo at a time: the previous copy is dropped only now that the new one is here.
+        runCatching { dir.listFiles()?.forEach { if (it.isFile && it != temp) it.delete() } }
+        val target = File(dir, name)
+        runCatching { temp.copyTo(target, overwrite = true) }
+        runCatching { temp.delete() }
+        return if (target.length() > 0L) target else null
     }
 
     private fun fileNameOf(context: Context, uri: Uri, fallbackName: String): String {
@@ -294,4 +301,7 @@ object BootMediaPicker {
     }
 
     private const val INTRO_DIR = "intro"
+
+    /** The name a new copy is read into before it replaces the previous one (v4.11). */
+    private const val TEMP_NAME = "boot-logo-copy.tmp"
 }

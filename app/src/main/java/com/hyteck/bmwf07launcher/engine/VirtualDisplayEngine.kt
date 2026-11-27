@@ -145,7 +145,38 @@ import kotlin.math.abs
  *     drag swap a display mid-gesture. The repair and the committed pass both end in the same
  *     `scheduleSwap` slot per pane, so one replacement goes ahead and the other request simply re-times it.
  *
- * ## What else is kept from v4.0–v4.4
+ * ## v4.11 — the same app can no longer run twice in one pane (2026-11-27)
+*
+* The car unit asked: "혹시 앱이 두개 실행되니? 왜 네비 소리가 두번씩 들리지?" It did. Until v4.10 every
+* launch that was not a plain re-order added `FLAG_ACTIVITY_MULTIPLE_TASK`, so whenever the launcher
+* started the app the pane already showed — a preset tapped twice, a pane re-picked, an engine that
+* came back after Shizuku appeared, a preset that changed the ratio — the platform opened a **second
+* instance** beside the one that was already running. Two instances of a navigation app both speak.
+*
+* v4.11 leaves that flag off for every launch and adds it only for the one case that needs it: the
+* other pane was deliberately given the same app (see [otherPaneShows]). With `NEW_TASK` alone the
+* platform reuses the instance that exists — the task already on this display, or one on another
+* display, which `setLaunchDisplayId` moves into this pane — so a route or a player is continued
+* instead of duplicated.
+*
+* The same report has two more sources, both closed here:
+*
+*  - a pane that moves on to a different app left the old app's task on its display, still able to
+*    talk from behind the new one ([launch]); the app that is no longer shown is now removed, and
+*    "앱 빼기" removes it too ([clear]);
+*  - when a display was replaced and the platform refused to move the app, the fallback started the
+*    app on the new display while the old one kept the first copy for another 600 ms
+*    ([completeSwap]) — the old display is now emptied once more and released almost at once.
+*
+* Two smaller corrections from the same pass:
+*
+*  - `setDisplayState(true)` is sent only to a display this engine actually froze ([frozenPanes]);
+*    unfreezing a display that was never frozen is what blanked both panes in v4.1 on this firmware.
+*  - a touch that arrives while a pane's SurfaceView already has its new size but its display still
+*    has the old one is mapped onto the display it is addressed to ([mapToDisplay]) instead of
+*    landing at the wrong place in the app.
+*
+* ## What else is kept from v4.0–v4.4
  *
  *  - The first display of a pane is created exactly the way v4.0 created it and the way CarCar
  *    creates it (`createVirtualDisplay(name, w, h, dpi, null, 0xD09)`, then `dontOverrideDisplayInfo`,
@@ -215,6 +246,13 @@ class VirtualDisplayEngine(
 
     private val packages = HashMap<Side, String>()
     private val activePackages = HashMap<Side, String>()
+
+    /**
+     * The app last launched into a pane (v4.11). Kept apart from [packages], which is the app the
+     * pane is *meant* to show: a preset or a swap changes the intention before anything is
+     * launched, and an emptied pane still has to end the app that is really running on its display.
+     */
+    private val shownPackages = HashMap<Side, String>()
     private val densities = HashMap<Side, Int>()
 
     /** How often a pane waited for the Shizuku touch service before falling back to itself. */
@@ -235,8 +273,29 @@ class VirtualDisplayEngine(
     /** How many displays a pane has been given, for the log. */
     private val generations = HashMap<Side, Int>()
 
+    /**
+     * Panes whose display this engine froze with `setDisplayState(false)` (v4.11).
+     *
+     * Only a display that is in here may be resumed: calling `setDisplayState(true)` on a display
+     * that was never frozen is the call v4.1 made on every resume, and on this firmware it left
+     * both panes blank (see [SystemDisplayHost]).
+     */
+    private val frozenPanes = HashSet<Side>()
+
     /** Displays whose release is scheduled; [retire] lets one go at a time. */
     private val retiring = ArrayDeque<Pair<DisplayHost, Int>>()
+
+    /**
+     * The display each pane's current gesture was started on (v4.11).
+     *
+     * A gesture belongs to one display from its finger-down to its finger-up, together with that
+     * display's pixel size at the time. Without this, a display that is replaced in the middle of a
+     * drag would take the rest of that drag into the new display — one half of a scroll in one
+     * window and the other half in the next.
+     */
+    private class Gesture(val displayId: Int, val width: Int, val height: Int)
+
+    private val gestures = HashMap<Side, Gesture>()
 
     /** True while [pumpRetire] is waiting to release the next display. */
     private var retiringBusy = false
@@ -281,8 +340,36 @@ class VirtualDisplayEngine(
         view.setOnClickListener { /* the touch itself is forwarded in the listener below */ }
         view.setOnTouchListener { touched, event ->
             if (released || viewOf(side) !== touched) return@setOnTouchListener false
-            val displayId = panes[side]?.displayId ?: -1
-            if (displayId >= 0) touchSink?.invoke(displayId, event)
+            val pane = panes[side]
+            val displayId = pane?.displayId ?: -1
+            if (displayId >= 0 && pane != null) {
+                val action = event.actionMasked
+                val gesture = if (action == MotionEvent.ACTION_DOWN) {
+                    Gesture(displayId, pane.width, pane.height).also { gestures[side] = it }
+                } else {
+                    gestures[side]
+                }
+                val target = gesture?.displayId ?: displayId
+                // v4.11: the pane's SurfaceView can already have its new size while the display the
+                // touch is addressed to still has the old one (a display is replaced right after a
+                // ratio change, a fullscreen toggle or a return). The event is mapped onto the
+                // pixels of the display it really goes to, so a tap in that moment cannot land on
+                // another button of the app.
+                val mapped = mapToDisplay(
+                    touched,
+                    gesture?.width ?: pane.width,
+                    gesture?.height ?: pane.height,
+                    event
+                )
+                try {
+                    touchSink?.invoke(target, mapped ?: event)
+                } finally {
+                    mapped?.recycle()
+                    if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                        gestures.remove(side)
+                    }
+                }
+            }
             if (event.actionMasked == MotionEvent.ACTION_UP) touched.performClick()
             true
         }
@@ -329,6 +416,41 @@ class VirtualDisplayEngine(
 
     private fun viewOf(side: Side): SurfaceView =
         if (side == Side.LEFT) leftView else rightView
+
+    /**
+     * A copy of [event] expressed in a display of [displayWidth] × [displayHeight] pixels, or null
+     * when the pane's view already has exactly that size (the normal case, which costs nothing).
+     */
+    private fun mapToDisplay(
+        view: SurfaceView,
+        displayWidth: Int,
+        displayHeight: Int,
+        event: MotionEvent
+    ): MotionEvent? {
+        val width = view.width
+        val height = view.height
+        if (width <= 0 || height <= 0 || displayWidth <= 0 || displayHeight <= 0) return null
+        if (abs(width - displayWidth) <= SIZE_TOLERANCE &&
+            abs(height - displayHeight) <= SIZE_TOLERANCE
+        ) {
+            return null
+        }
+        val copy = try {
+            MotionEvent.obtain(event)
+        } catch (t: Throwable) {
+            return null
+        }
+        try {
+            copy.setLocation(
+                event.x * displayWidth / width,
+                event.y * displayHeight / height
+            )
+        } catch (t: Throwable) {
+            copy.recycle()
+            return null
+        }
+        return copy
+    }
 
     private fun setView(side: Side, view: SurfaceView) {
         if (side == Side.LEFT) leftView = view else rightView = view
@@ -610,6 +732,8 @@ class VirtualDisplayEngine(
         swappedAt[side] = System.currentTimeMillis()
         surfaceLost.remove(side)
         lossRepairs.remove(side)
+        // A display made for a pane that is hidden right now is frozen as well (fullscreen).
+        if (frozenPanes.contains(side)) host.setState(created, false)
         generations[side] = (generations[side] ?: 0) + 1
         hideStatus(side)
         Log.i(
@@ -843,6 +967,9 @@ class VirtualDisplayEngine(
         lossRepairs.remove(side)
         panes[side] = Pane(created, surface, width, height, dpi)
         swappedAt[side] = System.currentTimeMillis()
+        // A pane that fullscreen has hidden keeps its new display frozen, so the app does not draw
+        // into a pane nobody sees and does not start making a sound nobody asked for.
+        if (frozenPanes.contains(side)) host.setState(created, false)
         val generation = (generations[side] ?: 0) + 1
         generations[side] = generation
         hideStatus(side)
@@ -855,10 +982,11 @@ class VirtualDisplayEngine(
         val pkg = packages[side]
         val sameApp = pkg != null && pkg == activePackages[side]
         val moved = sameApp && TaskMover.moveRootTasks(oldPane.displayId, created, pkg)
+        var started = false
         if (pkg != null && !moved) {
             // Either the package changed (e.g. preset) or the move was refused: start the desired
             // app directly on the new display.
-            launchOnDisplay(side, pkg, created, reorder = sameApp, fatal = false)
+            started = launchOnDisplay(side, pkg, created, reorder = sameApp, fatal = false)
         } else if (pkg != null && wasSurfaceLost) {
             // The pane was behind another window, so its app was stopped while nothing drew into
             // it. The move kept the app and its state, but a stopped activity produces no frames
@@ -872,7 +1000,23 @@ class VirtualDisplayEngine(
         }
         // The app has left the old display (moved) or a new instance is starting on the new one:
         // its content is not needed any more.
-        retire(host, oldPane.displayId)
+        //
+        // v4.11: when the move was refused and the app had to be started again, the old display
+        // still holds the old instance for another RELEASE_DELAY_MS. For a navigation app that is
+        // a second voice giving the same instruction — the "네비 소리가 두번씩" report. One more
+        // move puts whatever is left of the app on the new display, and the old display is then
+        // released almost at once instead of 600 ms later.
+        if (pkg != null && !moved && started) {
+            handler.postDelayed({
+                if (released) return@postDelayed
+                if (panes[side]?.displayId != created) return@postDelayed
+                if (packages[side] != pkg) return@postDelayed
+                TaskMover.moveRootTasks(oldPane.displayId, created, pkg)
+            }, FAST_MOVE_RETRY_MS)
+            retire(host, oldPane.displayId, FAST_RELEASE_MS)
+        } else {
+            retire(host, oldPane.displayId)
+        }
         scheduleReport(side, created)
     }
 
@@ -992,25 +1136,52 @@ class VirtualDisplayEngine(
         "bmw-f07-" + (if (side == Side.LEFT) "left" else "right")
 
     override fun launch(side: Side, packageName: String) {
+        val previous = shownPackages[side]
         packages[side] = packageName
         val displayId = panes[side]?.displayId
         if (displayId == null) {
             scheduleSync()
             return
         }
+        // v4.11: a pane that moves on to another app leaves the old one running behind the new
+        // one — the task stays on the display and a navigation app in the background keeps
+        // talking. The app that is no longer shown is taken off this pane's display first.
+        if (previous != null && previous != packageName) {
+            if (TaskMover.removeTasks(displayId, previous)) {
+                Log.i(TAG, "pane $side removed $previous from display $displayId before $packageName")
+            }
+            if (activePackages[side] == previous) activePackages.remove(side)
+        }
         launchOnDisplay(side, packageName, displayId, reorder = false)
     }
 
     override fun preparePackages(left: String?, right: String?) {
-        if (left != null) packages[Side.LEFT] = left else clear(Side.LEFT)
-        if (right != null) packages[Side.RIGHT] = right else clear(Side.RIGHT)
+        // Only the intention is recorded: a preset that changes the ratio, or a swap of the two
+        // panes, has to launch on the display the pane is about to have, and must not end an app
+        // that is on its way to the opposite pane (v4.11).
+        if (left != null) packages[Side.LEFT] = left else forget(Side.LEFT)
+        if (right != null) packages[Side.RIGHT] = right else forget(Side.RIGHT)
+    }
+
+    /** The pane's app is forgotten without being touched — see [preparePackages]. */
+    private fun forget(side: Side) {
+        packages.remove(side)
+        activePackages.remove(side)
     }
 
     override fun clear(side: Side) {
-        // The app keeps its display (another app's task cannot be killed from here); the pane's
-        // empty overlay simply covers it until a new app is picked.
+        // v4.11: an emptied pane also ends the app that is on it. Until v4.10 the app kept running
+        // behind the pane's empty overlay, so "앱 빼기" left a navigation app talking (or a player
+        // playing) over a pane that looked empty.
+        val pkg = shownPackages.remove(side)
         packages.remove(side)
         activePackages.remove(side)
+        if (pkg != null) {
+            val displayId = panes[side]?.displayId ?: return
+            if (TaskMover.removeTasks(displayId, pkg)) {
+                Log.i(TAG, "pane $side cleared; $pkg removed from display $displayId")
+            }
+        }
     }
 
     /**
@@ -1021,11 +1192,18 @@ class VirtualDisplayEngine(
     override fun setPaneVisible(side: Side, visible: Boolean) {
         val pane = panes[side] ?: return
         val host = hosts[side] ?: return
-        host.setState(pane.displayId, visible)
         if (visible) {
-            val surface = viewOf(side).holder.surface
-            if (surface != null && surface.isValid) host.setSurface(pane.displayId, surface)
+            // v4.11: only a display this engine actually froze is resumed. `setDisplayState(true)`
+            // on a display that was never frozen is what left both panes blank on this firmware in
+            // v4.1, so the fullscreen toggle now says "show" only to the pane it hid.
+            if (frozenPanes.remove(side)) {
+                host.setState(pane.displayId, true)
+                val surface = viewOf(side).holder.surface
+                if (surface != null && surface.isValid) host.setSurface(pane.displayId, surface)
+            }
             scheduleSync()
+        } else if (frozenPanes.add(side)) {
+            host.setState(pane.displayId, false)
         }
     }
 
@@ -1122,28 +1300,38 @@ class VirtualDisplayEngine(
         reorder: Boolean,
         /** When false, a refusal only shows on the pane; it does not condemn the whole engine. */
         fatal: Boolean = true
-    ) {
+    ): Boolean {
         val intent = context.packageManager.getLaunchIntentForPackage(packageName)
         if (intent == null) {
             onMessage("앱을 찾을 수 없습니다: $packageName")
-            return
+            return false
         }
+        shownPackages[side] = packageName
         intent.addFlags(
             Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
         )
-        if (reorder) {
+        if (otherPaneShows(side, packageName)) {
+            // v4.11: `FLAG_ACTIVITY_MULTIPLE_TASK` is what made the same app run **twice**. It is
+            // added only for the one case that needs it — both panes were deliberately given the
+            // same app, so this pane needs an instance of its own instead of taking the other
+            // pane's task away. For every other launch the flag stays off: with `NEW_TASK` alone
+            // the platform re-uses the instance the app already has (the task already on this
+            // display, or one on another display, which `setLaunchDisplayId` moves here) instead
+            // of opening a second copy that talks over the first one (user report: "왜 네비 소리가
+            // 두번씩 들리지?", 2026-11-27).
+            intent.addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+        } else if (reorder) {
             // Bring the already running activity back without recreating it; the window manager
             // then lays it out into the resized display.
             intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
-        } else {
-            intent.addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
         }
         val options = ActivityOptions.makeBasic()
         options.setLaunchDisplayId(displayId)
-        try {
+        return try {
             context.startActivity(intent, options.toBundle())
             activePackages[side] = packageName
             launchErrorReported = false
+            true
         } catch (e: Exception) {
             // v4.3: the one failure that reads as "a black pane" from the driver's seat — the
             // display never received the app. Name it on the pane and in the log.
@@ -1153,7 +1341,23 @@ class VirtualDisplayEngine(
                 launchErrorReported = true
                 reportUnavailable()
             }
+            false
         }
+    }
+
+    /**
+     * True when the **other** pane is really showing [packageName] right now (v4.11).
+     *
+     * Both the package this pane is meant to show and the one that was last launched are checked,
+     * and — because a pane can be cleared while its app keeps running — the tasks actually on the
+     * other pane's display are asked as well. Only then may a launch take a second instance of the
+     * app; otherwise it must reuse the one that exists.
+     */
+    private fun otherPaneShows(side: Side, packageName: String): Boolean {
+        val other = if (side == Side.LEFT) Side.RIGHT else Side.LEFT
+        if (packages[other] == packageName || activePackages[other] == packageName) return true
+        val displayId = panes[other]?.displayId ?: return false
+        return TaskMover.holdsTask(displayId, packageName)
     }
 
     override fun release() {
@@ -1185,11 +1389,14 @@ class VirtualDisplayEngine(
         rightView = rightSurface
         packages.clear()
         activePackages.clear()
+        shownPackages.clear()
         waits.clear()
         surfaceWaits.clear()
         swaps.clear()
         swappedAt.clear()
         surfaceLost.clear()
+        frozenPanes.clear()
+        gestures.clear()
     }
 
     private fun restoreOriginalSurface(current: SurfaceView, original: SurfaceView) {
@@ -1250,6 +1457,12 @@ class VirtualDisplayEngine(
 
         /** The second wake after a return, once the new display has settled (v4.10). */
         private const val WAKE_RETRY_MS = 220L
+
+        /** A fallback launch leaves the old instance behind; its display goes this soon (v4.11). */
+        private const val FAST_RELEASE_MS = 140L
+
+        /** One more move off the old display, before it is released (v4.11). */
+        private const val FAST_MOVE_RETRY_MS = 60L
 
         /** A committed bounds pass settles quickly only this long after it arrived (v4.10). */
         private const val COMMIT_WINDOW_MS = 1200L

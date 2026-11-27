@@ -472,6 +472,9 @@ class LauncherActivity : ScaledActivity() {
             settings.sessionLeft = leftPkg
             settings.sessionRight = rightPkg
             engine?.preparePackages(preset.left, preset.right)
+            // v4.11: a pane the preset leaves empty is emptied for real, not just covered.
+            if (preset.left == null) engine?.clear(Side.LEFT)
+            if (preset.right == null) engine?.clear(Side.RIGHT)
             setFullscreen(null)
             setRatio(preset.ratio, persist = true, commit = true)
             updateEmptyStates()
@@ -623,9 +626,18 @@ class LauncherActivity : ScaledActivity() {
         fullscreen = side
         binding.split.fullscreen = side
         // v4.0: the pane that fullscreen left behind is frozen instead of being left to draw.
+        //
+        // v4.11: only the pane whose visibility really changes is told. The pane that becomes the
+        // fullscreen one was visible all along, and `setDisplayState(true)` on a display that was
+        // never frozen is the call that left both panes blank on this firmware in v4.1, so it is
+        // no longer sent to it. Going fullscreen freezes the other pane; leaving fullscreen
+        // resumes exactly that pane.
         if (previous != side && engine?.inline == true) {
-            engine?.setPaneVisible(Side.LEFT, side != Side.RIGHT)
-            engine?.setPaneVisible(Side.RIGHT, side != Side.LEFT)
+            // The pane that fullscreen had hidden comes back, and the pane the fullscreen one is
+            // now covering is frozen. The engine itself ignores "show" for a pane it never froze,
+            // so the fullscreen pane is never sent `setDisplayState(true)`.
+            if (previous != null) engine?.setPaneVisible(opposite(previous), true)
+            if (side != null) engine?.setPaneVisible(opposite(side), false)
         }
         binding.leftFullExit.visibility = if (side == Side.LEFT) View.VISIBLE else View.GONE
         binding.rightFullExit.visibility = if (side == Side.RIGHT) View.VISIBLE else View.GONE
@@ -694,7 +706,12 @@ class LauncherActivity : ScaledActivity() {
         val key = "$commit|${left.toShortString()}|${right.toShortString()}|$minLeft|$maxRight"
         if (key == lastBoundsKey) return
         lastBoundsKey = key
-        current.applyBounds(left, right, commit || current.inline)
+        // v4.11: the engine is told whether this pass is a *committed* change (a preset, the ratio
+        // menu, a fullscreen toggle, a resume) or a pass in the middle of a drag. An inline engine
+        // uses it to choose how long it waits before replacing a pane's display; always sending
+        // "committed" took the drag debounce away and could replace a display while the finger was
+        // still moving.
+        current.applyBounds(left, right, commit)
     }
 
     /** Area of the visible dock in screen pixels (null when the dock is hidden). */
@@ -799,6 +816,8 @@ class LauncherActivity : ScaledActivity() {
     }
 
     private fun pkgOf(side: Side): String? = if (side == Side.LEFT) leftPkg else rightPkg
+
+    private fun opposite(side: Side): Side = if (side == Side.LEFT) Side.RIGHT else Side.LEFT
 
     private fun dpiOf(side: Side): Int =
         if (side == Side.LEFT) settings.leftDpi else settings.rightDpi
@@ -952,6 +971,10 @@ class LauncherActivity : ScaledActivity() {
         settings.sessionRight = rightPkg
         val current = engine
         if (pkg == null) {
+            // v4.11: an emptied pane also ends the app that is on it (see the engine's clear), so a
+            // navigation app cannot keep talking from a pane that looks empty. A pane that was in
+            // fullscreen leaves it: an empty pane covering the other one is a dead end.
+            if (fullscreen == side) setFullscreen(null)
             current?.clear(side)
         } else {
             launchApp(side, pkg)
@@ -983,12 +1006,21 @@ class LauncherActivity : ScaledActivity() {
         settings.sessionRight = rightPkg
         updateEmptyStates()
         updatePresetHighlight()
+        // v4.11: both panes are emptied before anything is launched again. Without that, the app
+        // that leaves a pane stays on that pane's display behind the new one — a second navigation
+        // voice — and the launch of the app that arrives would either duplicate it or take it away
+        // from the pane it is still shown in. A swap therefore starts both apps again; what it
+        // never does is run one of them twice (see the engine's launch/clear).
         engine?.clear(Side.LEFT)
         engine?.clear(Side.RIGHT)
         leftPkg?.let { launchApp(Side.LEFT, it) }
         val right = rightPkg
         if (right != null) {
-            handler.postDelayed({ launchApp(Side.RIGHT, right) }, PANE_GAP_MS)
+            if (engine?.inline == true) {
+                launchApp(Side.RIGHT, right)
+            } else {
+                handler.postDelayed({ launchApp(Side.RIGHT, right) }, PANE_GAP_MS)
+            }
         }
         scheduleBounds(commit = true)
     }
@@ -1172,8 +1204,17 @@ class LauncherActivity : ScaledActivity() {
     private fun handleIntent(intent: Intent?): Boolean {
         val pkg = intent?.getStringExtra(EXTRA_PACKAGE) ?: return false
         val side = if (intent.getStringExtra(EXTRA_SIDE) == "right") Side.RIGHT else Side.LEFT
-        if (!sessionStarted) {
+        val coldStart = !sessionStarted
+        if (coldStart) {
             sessionStarted = true
+            // v4.11: a launcher that was killed while the app drawer was open comes back from the
+            // drawer's intent alone. The pane the drawer did not name comes back from the
+            // remembered session instead of staying empty for the rest of the drive.
+            if (settings.rememberSession && pkgOf(opposite(side)) == null) {
+                val other = if (side == Side.LEFT) repo.installedOrNull(settings.sessionRight)
+                else repo.installedOrNull(settings.sessionLeft)
+                if (side == Side.LEFT) rightPkg = other else leftPkg = other
+            }
         }
         if (repo.installedOrNull(pkg) == null) {
             toast(getString(R.string.app_missing))
@@ -1182,6 +1223,22 @@ class LauncherActivity : ScaledActivity() {
         }
         intent.removeExtra(EXTRA_PACKAGE)
         intent.removeExtra(EXTRA_SIDE)
+        if (coldStart) {
+            updateEmptyStates()
+            val otherSide = opposite(side)
+            val other = pkgOf(otherSide)
+            handler.postDelayed({
+                if (isFinishing || isDestroyed) return@postDelayed
+                applyBounds(commit = false)
+                if (other != null) {
+                    if (engine?.inline == true) {
+                        launchApp(otherSide, other)
+                    } else {
+                        handler.postDelayed({ launchApp(otherSide, other) }, PANE_GAP_MS)
+                    }
+                }
+            }, SESSION_START_DELAY_MS)
+        }
         return true
     }
 

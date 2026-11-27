@@ -4,7 +4,10 @@ import android.content.Context
 import android.graphics.SurfaceTexture
 import android.media.MediaPlayer
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.util.AttributeSet
+import android.util.Log
 import android.view.Gravity
 import android.view.Surface
 import android.view.TextureView
@@ -44,6 +47,26 @@ class CroppedVideoView @JvmOverloads constructor(
     private var videoWidth = 0
     private var videoHeight = 0
 
+    /** True once the clip really started; the watchdog in [play] gives up until then (v4.11). */
+    private var prepared = false
+
+    private val handler = Handler(Looper.getMainLooper())
+
+    /**
+     * v4.11: a clip that never prepares must not hold the boot screen forever.
+     *
+     * The intro layer covers both panes, so a `prepareAsync()` that never answers (or a
+     * `SurfaceTexture` that is never handed out) leaves a black screen with nothing on it until
+     * someone taps it. The caller's `onFailed` ends the boot screen the same way a broken file
+     * does; a clip normally prepares in well under a second, so the timeout costs a working clip
+     * nothing.
+     */
+    private val prepareWatchdog = Runnable {
+        if (prepared) return@Runnable
+        Log.w(TAG, "intro clip did not start within ${PREPARE_TIMEOUT_MS}ms; ending the boot screen")
+        onFailed?.invoke()
+    }
+
     /** Re-fits the clip when the intro layer is measured or the screen size changes. */
     private val parentLayoutListener = View.OnLayoutChangeListener {
             _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
@@ -60,6 +83,7 @@ class CroppedVideoView @JvmOverloads constructor(
     fun play(uri: Uri) {
         release()
         pendingUri = uri
+        handler.postDelayed(prepareWatchdog, PREPARE_TIMEOUT_MS)
         if (isAvailable) open(uri)
     }
 
@@ -73,6 +97,8 @@ class CroppedVideoView @JvmOverloads constructor(
     }
 
     fun release() {
+        handler.removeCallbacks(prepareWatchdog)
+        prepared = false
         player?.let { mp ->
             try {
                 mp.setSurface(null)
@@ -115,6 +141,8 @@ class CroppedVideoView @JvmOverloads constructor(
     }
 
     override fun onPrepared(mp: MediaPlayer) {
+        prepared = true
+        handler.removeCallbacks(prepareWatchdog)
         takeVideoSize(mp)
         try {
             mp.setVolume(0f, 0f)
@@ -146,6 +174,7 @@ class CroppedVideoView @JvmOverloads constructor(
     }
 
     override fun onError(mp: MediaPlayer, what: Int, extra: Int): Boolean {
+        handler.removeCallbacks(prepareWatchdog)
         onFailed?.invoke()
         return true
     }
@@ -221,5 +250,12 @@ class CroppedVideoView @JvmOverloads constructor(
         }
         layoutParams = FrameLayout.LayoutParams(targetWidth, targetHeight, Gravity.CENTER)
         requestLayout()
+    }
+
+    companion object {
+        private const val TAG = "MNLauncher"
+
+        /** A local clip prepares in well under a second; this is only a guard against a hang. */
+        private const val PREPARE_TIMEOUT_MS = 8_000L
     }
 }

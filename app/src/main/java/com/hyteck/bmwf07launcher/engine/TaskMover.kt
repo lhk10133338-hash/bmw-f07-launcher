@@ -122,6 +122,54 @@ internal object TaskMover {
     }
 
     /**
+     * True when [packageName] has a task on [displayId] **right now** (v4.11).
+     *
+     * The opposite choice from [hasTask]: there the answer must never restart an app out of
+     * ignorance, here it decides whether a launch may open a second instance, so an unreadable task
+     * list means "no" — the launch then reuses the instance instead of duplicating it.
+     */
+    fun holdsTask(displayId: Int, packageName: String): Boolean {
+        if (displayId < 0) return false
+        val service = service ?: return false
+        val tasks = tasksOn(service, displayId)
+        if (tasks.isEmpty()) return false
+        return tasks.any { taskPackage(it) == packageName }
+    }
+
+    /**
+     * Takes every task of [packageName] off [displayId] and returns true when at least one was
+     * removed (v4.11).
+     *
+     * Used when a pane moves on to another app, or when the user empties a pane: without it the
+     * app that is no longer shown keeps running on the pane's display, and a navigation app in the
+     * background keeps giving voice guidance over whatever is shown there instead.
+     *
+     * The main display is never touched: this launcher owns no task there and the car's own UI
+     * lives there. A refusal (a build without `REMOVE_TASKS`) only returns false.
+     */
+    fun removeTasks(displayId: Int, packageName: String): Boolean {
+        if (displayId <= 0) return false
+        val service = service ?: return false
+        val tasks = tasksOn(service, displayId)
+        if (tasks.isEmpty()) return false
+        var removed = false
+        for (task in tasks) {
+            if (taskPackage(task) != packageName) continue
+            val taskId = intField(task, "taskId") ?: continue
+            if (invoke(service, "removeTask", taskId)) {
+                removed = true
+                Log.i(TAG, "TaskMover: removeTask(task=$taskId) removed $packageName from display $displayId")
+            }
+        }
+        if (!removed) {
+            // No task of this app was listed for the display, or the platform refused (the standard
+            // build has no REMOVE_TASKS): nothing is broken, the app is simply left where it is.
+            Log.i(TAG, "TaskMover: no task of $packageName removed from display $displayId")
+        }
+        return removed
+    }
+
+    /**
      * The activity on top of [packageName]'s task on [displayId], or null when the platform does
      * not tell (v4.8).
      *
