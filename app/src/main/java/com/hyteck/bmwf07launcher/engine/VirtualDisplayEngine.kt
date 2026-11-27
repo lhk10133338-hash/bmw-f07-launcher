@@ -140,10 +140,10 @@ import kotlin.math.abs
  *     follows about 200 ms later ([scheduleRewake]) — only for the same display generation and only
  *     while the engine is alive.
  *  4. A committed bounds pass ([applyBounds] with `commit = true`, which `onResume` sends at the same
- *     moment it asks for the repair) now expires after [COMMIT_WINDOW_MS] instead of staying set until
- *     some later pass consumes it, so it can never make a later divider drag swap a display mid-gesture.
- *     The repair and the committed pass both end in the same `scheduleSwap` slot per pane, so one
- *     replacement goes ahead and the other request simply re-times it.
+ *     moment it asks for the repair) is now remembered **per pane**, is consumed by the first pass that
+ *     acts on it, and expires after [COMMIT_WINDOW_MS] either way, so it can never make a later divider
+ *     drag swap a display mid-gesture. The repair and the committed pass both end in the same
+ *     `scheduleSwap` slot per pane, so one replacement goes ahead and the other request simply re-times it.
  *
  * ## What else is kept from v4.0–v4.4
  *
@@ -247,11 +247,8 @@ class VirtualDisplayEngine(
     /** When the last pane display was replaced, so the two panes keep a gap between them (v4.6). */
     private var lastSwapEndedAt = 0L
 
-    /** True when the latest [applyBounds] came from a committed choice (ratio menu, preset, release). */
-    private var commitPending = false
-
-    /** When that committed choice arrived; it only settles quickly for a moment (v4.10). */
-    private var commitAt = 0L
+    /** When a committed choice last reached this pane (ratio menu, preset, release), v4.10. */
+    private val commitAt = HashMap<Side, Long>()
 
     /**
      * Loss-driven display rebuilds per pane (v4.10). A return rebuilds a pane on a brand-new
@@ -395,8 +392,9 @@ class VirtualDisplayEngine(
         // The SurfaceViews already have the exact pane size; the pass below compares that size with
         // the size the pane's display was created at and replaces the display if it moved.
         if (commit) {
-            commitPending = true
-            commitAt = System.currentTimeMillis()
+            val now = System.currentTimeMillis()
+            commitAt[Side.LEFT] = now
+            commitAt[Side.RIGHT] = now
         }
         scheduleSync()
     }
@@ -555,12 +553,14 @@ class VirtualDisplayEngine(
         val lossReported = surfaceLost.contains(side)
         if (!surfaceReplaced && !geometryMoved && !lossReported) return
 
-        // v4.10: a committed pass keeps its short settle only for a moment. `onResume` sends one at
-        // the same instant it asks for the return repair, and a flag that stayed set would later
-        // make a divider drag replace a display in the middle of the gesture (GEOMETRY_SETTLE_MS
-        // exists for exactly that).
-        val committed = commitPending &&
-            System.currentTimeMillis() - commitAt <= COMMIT_WINDOW_MS
+        // v4.10: a committed pass keeps its short settle only for a moment, and only until a pass
+        // has acted on it. `onResume` sends one at the same instant it asks for the return repair,
+        // and a flag that stayed set would later make a divider drag replace a display in the
+        // middle of the gesture (GEOMETRY_SETTLE_MS exists for exactly that).
+        val committedAt = commitAt[side] ?: 0L
+        val committed = committedAt != 0L &&
+            System.currentTimeMillis() - committedAt <= COMMIT_WINDOW_MS
+        if (committed) commitAt.remove(side)
 
         // A drag makes dozens of these passes; only the rectangle it settles on is worth a display.
         val settleMs = when {
@@ -1178,8 +1178,7 @@ class VirtualDisplayEngine(
         pendingTimeouts.clear()
         pendingSwaps.clear()
         lossRepairs.clear()
-        commitPending = false
-        commitAt = 0L
+        commitAt.clear()
         restoreOriginalSurface(leftView, leftSurface)
         restoreOriginalSurface(rightView, rightSurface)
         leftView = leftSurface
@@ -1253,7 +1252,7 @@ class VirtualDisplayEngine(
         private const val WAKE_RETRY_MS = 220L
 
         /** A committed bounds pass settles quickly only this long after it arrived (v4.10). */
-        private const val COMMIT_WINDOW_MS = 2000L
+        private const val COMMIT_WINDOW_MS = 1200L
 
         /** The platform-signed build's application id suffix (see app/build.gradle.kts). */
         private const val SYSTEMUID_SUFFIX = ".systemuid"

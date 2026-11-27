@@ -46,11 +46,11 @@ ARM64 실기기와 x86_64 에뮬레이터(LD플레이어 등) 모두에서 설�
   엔진이 release됐거나 그 사이 창이 다른 디스플레이로 바뀌었으면 건너뜁니다.
 - **손실 재건 횟수 제한**(`MAX_LOSS_REPAIRS = 3`): 새 디스플레이를 만들 수 없는 기기에서 1초마다 `SurfaceView`를
   새로 만들고 앱을 재시작하는 무한 반복을 막습니다. 3회를 넘으면 손실 기록을 지우고 지금 표면에 다시 붙입니다.
-- **커밋 플래그 만료**(`COMMIT_WINDOW_MS = 2000`): `onResume()`은 `scheduleBounds(commit = true)`와
-  `scheduleRestore()`를 동시에 겁니다. `commitPending`이 무기한 남아 있으면 **나중의 분할바 드래그가 드래그
-  도중에 디스플레이를 갈아끼우게** 되므로(그래서 `GEOMETRY_SETTLE_MS`가 있습니다), 커밋은 도착한 뒤 2초
-  동안만 짧은 정착(60ms)을 씁니다. 복귀와 커밋된 bounds는 창마다 하나뿐인 `scheduleSwap` 슬롯에서 만나므로
-  한 번의 교체로 합쳐집니다.
+- **커밋 플래그를 창별로 만료**(`COMMIT_WINDOW_MS = 1200`): `onResume()`은 `scheduleBounds(commit = true)`와
+  `scheduleRestore()`를 동시에 겁니다. 예전의 `commitPending` 하나짜리 플래그가 무기한 남아 있으면 **나중의 분할바
+  드래그가 드래그 도중에 디스플레이를 갈아끼우게** 되므로(그래서 `GEOMETRY_SETTLE_MS`가 있습니다), 커밋은 창마다
+  따로 기억하고 그 커밋을 실제로 처리한 패스에서 소비하며, 처리되지 않아도 1.2초 뒤에는 만료됩니다.
+  복귀와 커밋된 bounds는 창마다 하나뿐인 `scheduleSwap` 슬롯에서 만나므로 한 번의 교체로 합쳐집니다.
 - 로그(`adb logcat -s MNLauncher`): `came back (newSurface=…, lost=…, alive=…)`, `rebuilding on a fresh
   SurfaceView after a surface loss (1/3)`, `came back with the pane; waking it on display …`, `re-waking …`.
 
