@@ -1,5 +1,6 @@
 package com.hyteck.bmwf07launcher.engine
 
+import android.graphics.Rect
 import android.util.Log
 import java.lang.reflect.Method
 
@@ -106,6 +107,60 @@ internal object TaskMover {
     }
 
     /**
+     * Lays the tasks on [displayId] out at [width] x [height] (v4.14).
+     *
+     * ## Why this exists
+     *
+     * [moveRootTasks] carries a running app onto a display that was just created at another size,
+     * and the app keeps running — a route, a playlist, a call in progress. What it does **not** do
+     * is measure the app again: the window arrives with the bounds it was given on the old
+     * display, so a map (Naver Map was the reported one) kept drawing into its old 30 % while the
+     * rest of the pane stayed black, and the only way out until v4.13 was to end the app and start
+     * it again — which is exactly what the user did not want ("비율 변경할 때마다 앱이 모두 꺼지고
+     * 재시작한다", 2026-11-27).
+     *
+     * The platform's own task resize puts the running task at the display's rectangle without
+     * restarting it:
+     *
+     *   `ActivityTaskManager.getService().resizeTask(taskId, Rect(0, 0, width, height), RESIZE_MODE_USER)`
+     *
+     * which is what `am task resize <taskId> 0 0 <width> <height>` runs
+     * (`ActivityTaskManagerService.resizeTask` → `Task.resize`, permission `MANAGE_ACTIVITY_TASKS`,
+     * which the SystemUID build holds through its platform signature). A resize makes the app's
+     * configuration change, so it relayouts itself at the new size in place.
+     *
+     * `setTaskWindowingMode(taskId, WINDOWING_MODE_FULLSCREEN)` is sent first and quietly ignored
+     * when the firmware does not have it: a task that is not a fullscreen task of its display
+     * would re-derive its bounds and undo the resize, while a fullscreen task simply takes the
+     * rectangle it is given.
+     */
+    fun resizeTasksOnDisplay(displayId: Int, width: Int, height: Int): Boolean {
+        if (displayId <= 0 || width <= 0 || height <= 0) return false
+        val service = service ?: return false
+        // Both the tasks themselves and the root tasks of the display: `resizeTask` takes a task
+        // id, and a firmware that keeps the app in a child task answers on the root task instead.
+        val ids = LinkedHashSet<Int>()
+        ids.addAll(taskIdsOn(service, displayId))
+        ids.addAll(rootTaskIdsOn(service, displayId))
+        if (ids.isEmpty()) {
+            Log.i(TAG, "TaskMover: nothing listed on display $displayId to resize")
+            return false
+        }
+        val bounds = Rect(0, 0, width, height)
+        var resized = 0
+        for (taskId in ids) {
+            setFullscreen(service, taskId)
+            if (resizeTask(service, taskId, bounds)) resized++
+        }
+        Log.i(
+            TAG,
+            "TaskMover: resizeTask ${width}x$height sent to $resized/${ids.size} task(s) on " +
+                "display $displayId"
+        )
+        return resized > 0
+    }
+
+    /**
      * True when [packageName] still has a task on [displayId].
      *
      * Deliberately conservative: when the platform cannot list tasks, or lists tasks whose package
@@ -167,44 +222,6 @@ internal object TaskMover {
             Log.i(TAG, "TaskMover: no task of $packageName removed from display $displayId")
         }
         return removed
-    }
-
-    /**
-     * Ends every process of [packageName] (v4.13).
-     *
-     * `removeTask` only takes the task off the display; a map app (Naver Map was the reported one)
-     * keeps its process, its `DisplayMetrics` and its GL surface cache and, started again a moment
-     * later, lays itself out with the **width it read the first time** — the pane showed the map at
-     * the old 50 % with the right 20 % empty after a 30:70 change (user report, 2026-11-27).
-     * Ending the process is the one thing that makes the next start read the new display from
-     * scratch.
-     *
-     * `ActivityManager.forceStopPackage` needs `FORCE_STOP_PACKAGES`, which the SystemUID build
-     * holds through its platform signature; the standard build gets a `SecurityException`, which is
-     * caught here and only returns false. Nothing about it can crash the launcher.
-     */
-    fun forceStop(context: android.content.Context, packageName: String): Boolean {
-        val manager = try {
-            context.getSystemService(android.content.Context.ACTIVITY_SERVICE)
-                as? android.app.ActivityManager
-        } catch (t: Throwable) {
-            null
-        } ?: return false
-        return try {
-            // @hide/@SystemApi, so it is reached by reflection: the SDK stub does not carry it.
-            val method = android.app.ActivityManager::class.java
-                .getMethod("forceStopPackage", String::class.java)
-            method.invoke(manager, packageName)
-            Log.i(TAG, "TaskMover: force-stopped $packageName so it re-reads its display")
-            true
-        } catch (t: Throwable) {
-            Log.i(
-                TAG,
-                "TaskMover: forceStopPackage($packageName) not allowed " +
-                    "(${t.javaClass.simpleName}); restarting it instead"
-            )
-            false
-        }
     }
 
     /**
@@ -332,6 +349,88 @@ internal object TaskMover {
     @Suppress("UNCHECKED_CAST")
     private fun asList(result: Any?): List<Any> = (result as? List<Any>) ?: emptyList()
 
+    /**
+     * `IActivityTaskManager.resizeTask(int taskId, in Rect bounds, int resizeMode)`, reached by
+     * reflection because the interface is `@hide` (v4.14).
+     *
+     * The argument list is built from the signature instead of from a fixed shape: a firmware may
+     * have added trailing parameters, which stay at their defaults. A method that is gone, a
+     * permission that is refused — every failure is logged and answered with false, so the caller
+     * can fall back to the old way of getting a picture.
+     */
+    private fun resizeTask(service: Any, taskId: Int, bounds: Rect): Boolean {
+        val candidates = try {
+            service.javaClass.methods.filter { it.name == "resizeTask" }
+        } catch (t: Throwable) {
+            return false
+        }
+        for (method in candidates) {
+            val types = method.parameterTypes
+            if (types.size < 3) continue
+            if (!isInt(types[0]) || !isInt(types[2])) continue
+            if (!Rect::class.java.isAssignableFrom(types[1])) continue
+            val args = arrayOfNulls<Any>(types.size)
+            args[0] = taskId
+            // A copy: the binder marshals it and the server may keep the object.
+            args[1] = Rect(bounds)
+            args[2] = RESIZE_MODE_USER
+            for (index in 3 until types.size) {
+                args[index] = when {
+                    isInt(types[index]) -> 0
+                    types[index] == java.lang.Boolean.TYPE -> false
+                    else -> null
+                }
+            }
+            return try {
+                method.isAccessible = true
+                method.invoke(service, *args)
+                Log.i(
+                    TAG,
+                    "TaskMover: resizeTask(task=$taskId, " +
+                        "${bounds.width()}x${bounds.height()}) sent"
+                )
+                true
+            } catch (t: Throwable) {
+                noteFailure("resizeTask(task=$taskId) failed: ${t.javaClass.simpleName} ${t.message}")
+                false
+            }
+        }
+        Log.i(TAG, "TaskMover: this firmware has no resizeTask(taskId, Rect, resizeMode)")
+        return false
+    }
+
+    /**
+     * `setTaskWindowingMode(taskId, WINDOWING_MODE_FULLSCREEN)` — best effort, nothing depends on
+     * it (v4.14). `toTop = false` is passed where the firmware has that argument: the task must
+     * not be brought in front of anything by being resized.
+     */
+    private fun setFullscreen(service: Any, taskId: Int): Boolean =
+        attempt(service, "setTaskWindowingMode", taskId, WINDOWING_MODE_FULLSCREEN, 0) ||
+            attempt(service, "setTaskWindowingMode", taskId, WINDOWING_MODE_FULLSCREEN)
+
+    /**
+     * A platform call whose absence means nothing: no failure is recorded for the log's one
+     * startup warning, because a firmware without the method is not a problem (v4.14).
+     */
+    private fun attempt(service: Any, name: String, vararg ints: Int): Boolean {
+        val method = find(service, name, ints.size) ?: return false
+        return try {
+            method.isAccessible = true
+            method.invoke(service, *argsFor(method, ints))
+            true
+        } catch (t: Throwable) {
+            Log.i(
+                TAG,
+                "TaskMover: $name(${ints.joinToString()}) not available " +
+                    "(${t.javaClass.simpleName})"
+            )
+            false
+        }
+    }
+
+    private fun isInt(type: Class<*>): Boolean =
+        type == Int::class.javaPrimitiveType || type == Int::class.javaObjectType
+
     private fun invokeForResult(service: Any, name: String, vararg ints: Int): Any? {
         val method = find(service, name, ints.size) ?: return null
         return try {
@@ -417,4 +516,7 @@ internal object TaskMover {
     private const val WINDOWING_MODE_UNDEFINED = -1
     private const val WINDOWING_MODE_FULLSCREEN = 1
     private const val ACTIVITY_TYPE_UNDEFINED = 0
+
+    /** `ActivityTaskManager.RESIZE_MODE_USER` (0) — a resize as if the user had asked for it. */
+    private const val RESIZE_MODE_USER = 0
 }

@@ -2,6 +2,7 @@ package com.hyteck.bmwf07launcher.ui
 
 import android.content.Context
 import android.graphics.SurfaceTexture
+import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Handler
@@ -126,6 +127,17 @@ class CroppedVideoView @JvmOverloads constructor(
         val mp = MediaPlayer()
         player = mp
         try {
+            // v4.14: the intro clip's sound was never heard. Two things kept it silent: the volume
+            // was hard-coded to zero in onPrepared, and the player had no audio attributes, so the
+            // unit could route it to a stream the car's media channel does not play. Media/movie
+            // is the usage a video player declares, and it is what the head unit's current audio
+            // output carries (API 21+, so every supported device has it).
+            mp.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                    .build()
+            )
             mp.setOnPreparedListener(this)
             mp.setOnCompletionListener(this)
             mp.setOnErrorListener(this)
@@ -145,7 +157,9 @@ class CroppedVideoView @JvmOverloads constructor(
         handler.removeCallbacks(prepareWatchdog)
         takeVideoSize(mp)
         try {
-            mp.setVolume(0f, 0f)
+            // v4.14: was `setVolume(0f, 0f)` — the clip played silent on purpose. The user asked for
+            // its sound ("인트로 재생 동영상을 넣는데 사운드가 안 나온다", 2026-11-27).
+            mp.setVolume(1f, 1f)
         } catch (ignored: Exception) {
             // Volume control is optional.
         }

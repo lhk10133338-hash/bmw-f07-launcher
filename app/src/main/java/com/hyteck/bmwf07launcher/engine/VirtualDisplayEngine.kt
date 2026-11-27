@@ -192,7 +192,9 @@ import kotlin.math.abs
 * size is trusted with another.
 *
 * [completeSwap] therefore compares the size the old display was created at with the size the new one was
-* made at, and when either side moved:
+* made at. **v4.14 replaces the restart below with a move and a resize** — the comparison is still there, and
+* is now what decides whether the moved task is resized; see the v4.14 section at the end of this header.
+* What v4.12 did, for the record:
 *
 *  1. the app that was on the old display is ended there ([TaskMover.removeTasks]) — including an app the
 *     preset replaced with another one, so two instances can never talk over each other in the meantime;
@@ -206,10 +208,34 @@ import kotlin.math.abs
 * ratio menu, and a divider drag (all of them end in one replacement at the rectangle the finger settled on).
 *
 * **The return path is untouched.** A pane that comes back from the camera, another app or the car's own
-* screen keeps its rectangle exactly (that is what made v4.10's return work), so `sizeChanged` is false there
-* and the app is still moved with `moveRootTasks` and woken with [wakeOnDisplay] — a route or a player
-* survives the return. Only a display made at another size takes the restart. A music app the user designated
-* is started again after the restart ([onAppRestarted]), so a ratio change does not leave it paused.
+* screen (or that changed size) keeps its app running: the task is moved with `moveRootTasks`, resized to the
+* pane's rectangle and woken with [wakeOnDisplay] — a route or a player survives. The restart this section
+* describes is gone in v4.14 (below).
+*
+* ## v4.14 — a ratio change no longer ends the apps (2026-11-27)
+*
+* The car unit tested v4.13: "시계랑 마크는 잘 뜨는 거 확인했고, 문제는 비율 변경할 때마다 앱이 모두 꺼지고
+* 재시작한다". That was exactly what v4.12 and v4.13 did on purpose: a display made at another size ended the
+* pane's task (and, where the build may, its process) and started the app again, because a task moved onto a
+* display of another size kept the bounds it was measured with on the old one — the 30:70 map drawn at its
+* old width with the rest of the pane black.
+*
+* The restart was the wrong half of that fix. What was missing was the platform's own resize:
+*
+*  - the running task is moved onto the new display with [TaskMover.moveRootTasks], exactly as the return path
+*    already did;
+*  - [TaskMover.resizeTasksOnDisplay] then sends `IActivityTaskManager.resizeTask(task, Rect(0, 0, w, h), 0)`
+*    for the tasks of that display (and `setTaskWindowingMode(FULLSCREEN)` first, where the firmware has it), so
+*    the window is laid out at the pane's rectangle without its process going away;
+*  - [wakeOnDisplay] and [scheduleRewake] bring the activity back to the front, so a stopped activity redraws
+*    and a resized one is measured again.
+*
+* Navigation keeps its route, a player keeps playing, and the pane fills its new rectangle. A preset that also
+* changes the app still takes the old app off the old display and starts the new one on the new display; a pane
+* whose move the platform refuses falls back to a launch, as before. When the resize itself is refused (no
+* `resizeTask` on the firmware, or no `MANAGE_ACTIVITY_TASKS`) the app keeps running at the old width and the
+* log says `resize sent=false` — the fallback launch only happens when the move failed, because ending a
+* running app is what the user asked to stop.
 *
 * ## What else is kept from v4.0–v4.4
  *
@@ -241,9 +267,13 @@ class VirtualDisplayEngine(
      */
     private val touchSink: ((Int, MotionEvent) -> Unit)? = null,
     /**
-     * v4.12: a pane's app was started again because its display changed size (a ratio change).
-     * The launcher uses it to send the music key again, so a player that was restarted by a ratio
-     * change picks up where it was instead of sitting paused.
+     * v4.12: a pane's app was laid out again on a display that replaced the one it was on (a ratio
+     * change). The launcher uses it to send the music key, so a player that the re-layout left
+     * paused picks up where it was; a player that is still playing is left alone (the auto-play
+     * step asks whether music is already active first).
+     *
+     * v4.14: the app is no longer restarted for this — it is moved and resized — but a
+     * configuration change can still recreate the player's activity, so the same step runs.
      */
     private val onAppRestarted: ((Side, String) -> Unit)? = null
 ) : SplitEngine {
@@ -271,12 +301,6 @@ class VirtualDisplayEngine(
 
     private var leftView: SurfaceView = leftSurface
     private var rightView: SurfaceView = rightSurface
-
-    /** v4.13: a size-change restart waiting for its moment (see [queueRestart]). */
-    private class Restart(val side: Side, val packageName: String, val displayId: Int)
-
-    private val restartQueue = ArrayDeque<Restart>()
-    private var restartBusy = false
 
     private val displayManager =
         context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
@@ -1040,66 +1064,68 @@ class VirtualDisplayEngine(
 
         val pkg = packages[side]
         val sameApp = pkg != null && pkg == activePackages[side]
-        // v4.12: a display made at another size must not be handed the task that was laid out at
-        // the old size. `moveRootTaskToDisplay` does reparent it, but on this unit a map/GL app
-        // (Naver Map was the reported one) keeps drawing into its old bounds: with 30:70 -> 70:30
-        // the map stayed at 30 % on the left and the rest of the pane stayed black. A size change
-        // therefore ends the old tasks and starts the app on the new display instead, and only a
-        // display that kept its size (the return from the camera or another window) still moves
-        // the task, so a route or a playlist survives there. See the class header.
+        // v4.14: a size change no longer divides the paths. The app that is already running in
+        // this pane is carried onto the new display and then **resized** to its rectangle by the
+        // platform, so a ratio change does not end it (the user's report on v4.13: "비율 변경할
+        // 때마다 앱이 모두 꺼지고 재시작한다"). The size is still what the old v4.12 problem was
+        // about — see [TaskMover.resizeTasksOnDisplay].
         val sizeChanged = abs(oldPane.width - width) > SIZE_TOLERANCE ||
             abs(oldPane.height - height) > SIZE_TOLERANCE
         var moved = false
         var started = false
-        /** v4.13: the old display was already released the moment its tasks were taken off it. */
-        var oldReleasedAtOnce = false
-        if (pkg != null && sizeChanged) {
-            val occupant = activePackages[side]
-            if (occupant != null && occupant != pkg) {
-                TaskMover.removeTasks(oldPane.displayId, occupant)
-            }
-            val removed = TaskMover.removeTasks(oldPane.displayId, pkg)
-            // v4.13: the report of 2026-11-27 (photo of a 30:70 preset: the map drawn at its old
-            // 50 % width with the right fifth empty) shows that removing the task and starting the
-            // app again in the same frame is not enough. Two things still let the old state come
-            // along: the old display exists for another 140 ms, during which the task being
-            // removed can be reparented onto the new one at its OLD bounds, and the app's process
-            // itself — its DisplayMetrics and its GL surface cache — survives the restart. So the
-            // display goes at once, the app's process is ended where the build may do it, and the
-            // launch waits for both to be real.
-            val stopped = forceStopForResize(pkg)
-            retire(host, oldPane.displayId, 0L)
-            oldReleasedAtOnce = true
-            Log.i(
-                TAG,
-                "pane $side size ${oldPane.width}x${oldPane.height} -> ${width}x$height; " +
-                    "$pkg: old task removed=$removed, process stopped=$stopped, " +
-                    "display ${oldPane.displayId} released at once, restarting in " +
-                    "${SIZE_RESTART_DELAY_MS}ms on display $created"
-            )
-            queueRestart(side, pkg, created)
-        } else if (pkg != null && sameApp) {
+        if (pkg != null && sameApp) {
             moved = TaskMover.moveRootTasks(oldPane.displayId, created, pkg)
             if (!moved) {
                 // The move was refused: start the desired app directly on the new display.
                 started = launchOnDisplay(side, pkg, created, reorder = true, fatal = false)
-            } else if (wasSurfaceLost) {
-                // The pane was behind another window, so its app was stopped while nothing drew
-                // into it. The move kept the app and its state, but a stopped activity produces no
-                // frames until it is resumed: bring it back to the front of its own display
-                // (v4.8). The pane's size did not move, so nothing of the app has to be restarted
-                // — a route or a player keeps running across the return (v4.12 keeps this path as
-                // it is).
-                Log.i(TAG, "pane $side app $pkg came back with the pane; waking it on display $created")
-                wakeOnDisplay(side, pkg, created)
-                // v4.10: the display and its surface have just been created, so the first wake can
-                // be swallowed by a window manager that has not laid the new display out yet. One
-                // more wake a moment later is what makes the return reliable.
-                scheduleRewake(side, pkg, created)
+            } else {
+                if (sizeChanged) {
+                    // v4.14: the task was carried over with the bounds it had on the old display,
+                    // which is what once left the map at its old width with the rest of the pane
+                    // black. `resizeTask` lays the running task out at the new rectangle, and the
+                    // app relayouts in place — no process, no route, no playback is lost.
+                    val resized = TaskMover.resizeTasksOnDisplay(created, width, height)
+                    Log.i(
+                        TAG,
+                        "pane $side moved $pkg ${oldPane.width}x${oldPane.height} -> " +
+                            "${width}x$height on display $created without a restart " +
+                            "(resize sent=$resized)"
+                    )
+                }
+                if (sizeChanged || wasSurfaceLost) {
+                    // A stopped activity draws nothing until it is resumed, and a task that was
+                    // just resized still has to be brought back to the front of its own display
+                    // so it is measured again (v4.8, v4.14). A route or a player keeps running
+                    // across both the return and the ratio change.
+                    Log.i(
+                        TAG,
+                        "pane $side app $pkg came back with the pane; waking it on display " +
+                            "$created"
+                    )
+                    wakeOnDisplay(side, pkg, created)
+                    // The display and its surface have just been created, so the first wake can be
+                    // swallowed by a window manager that has not laid the new display out yet. One
+                    // more wake a moment later is what makes it reliable (v4.10).
+                    scheduleRewake(side, pkg, created)
+                    if (sizeChanged) {
+                        // The app is still running, but the layout it was given is new: a player
+                        // whose activity was recreated by the configuration change is started
+                        // again if it stayed paused (the step asks first — a player that is still
+                        // playing is not touched).
+                        onAppRestarted?.invoke(side, pkg)
+                    }
+                }
             }
         } else if (pkg != null) {
-            // The package changed (e.g. a preset with another app): start the desired app directly
-            // on the new display.
+            // The package changed (e.g. a preset with another app): the app that is no longer
+            // shown is taken off the old display so it cannot talk from behind the new one, and
+            // the desired app is started on the new display at its rectangle.
+            if (sizeChanged) {
+                val occupant = activePackages[side]
+                if (occupant != null && occupant != pkg) {
+                    TaskMover.removeTasks(oldPane.displayId, occupant)
+                }
+            }
             started = launchOnDisplay(side, pkg, created, reorder = false, fatal = false)
         }
         // The app has left the old display (moved) or a new instance is starting on the new one:
@@ -1111,15 +1137,10 @@ class VirtualDisplayEngine(
         // move puts whatever is left of the app on the new display, and the old display is then
         // released almost at once instead of 600 ms later.
         //
-        // v4.12: a size change already ended the old tasks above, so the old display is released
-        // at once as well.
-        //
-        // v4.13: for a size change it is released *above*, in the same moment its tasks are taken
-        // off it — retiring it a second time here would only queue a release of a display that is
-        // already gone.
-        if (oldReleasedAtOnce) {
-            // nothing to do: the old display is already on its way out
-        } else if (pkg != null && !moved && started) {
+        // v4.14: the move is the way every size change takes now, so a moved task retires its old
+        // display on the normal delay — nothing of the app is left on it, and the extra moment
+        // lets the resize land before the display it came from goes away.
+        if (pkg != null && !moved && started) {
             handler.postDelayed({
                 if (released) return@postDelayed
                 if (panes[side]?.displayId != created) return@postDelayed
@@ -1134,89 +1155,18 @@ class VirtualDisplayEngine(
     }
 
     /**
-     * v4.13: restarts a pane's app after a size change, one pane at a time.
-     *
-     * A preset that changes the ratio replaces both panes, and two launches into two displays in
-     * the same frame is exactly the pair of display transactions that once froze touch input on
-     * this firmware (v4.6). The queue keeps the 180 ms the app needs after its old task and display
-     * went away, and starts the second pane another [SWAP_GAP_MS] later.
-     */
-    private fun queueRestart(side: Side, packageName: String, displayId: Int) {
-        restartQueue.addLast(Restart(side, packageName, displayId))
-        pumpRestart(SIZE_RESTART_DELAY_MS)
-    }
-
-    private fun pumpRestart(delayMs: Long) {
-        if (restartBusy) return
-        val next = restartQueue.removeFirstOrNull() ?: return
-        restartBusy = true
-        handler.postDelayed({
-            restartBusy = false
-            val side = next.side
-            val packageName = next.packageName
-            val displayId = next.displayId
-            // The pane may have changed display or app again in the meantime; then this restart
-            // has nothing to do.
-            if (!released && panes[side]?.displayId == displayId && packages[side] == packageName) {
-                val fresh = launchOnDisplay(side, packageName, displayId, reorder = false, fatal = false)
-                Log.i(
-                    TAG,
-                    "pane $side launched $packageName fresh on display $displayId (started=$fresh)"
-                )
-                if (fresh) {
-                    // A launch into a display the window manager has just laid out can still be
-                    // swallowed, so the app's task is looked for once more a moment later.
-                    scheduleRewake(side, packageName, displayId)
-                    // The launcher remembers the app on the new display as a fresh start: a music
-                    // app that came back paused gets the media key it gets on any other open.
-                    onAppRestarted?.invoke(side, packageName)
-                }
-            }
-            pumpRestart(SWAP_GAP_MS)
-        }, delayMs)
-    }
-
-    /**
      * Queues [displayId] for release, [delayMs] from now (v4.6).
      *
      * A ratio change replaces both panes, and releasing two displays in the same moment is one of
      * the display transactions the input dispatcher stalled on. [pumpRetire] therefore lets one
-     * go, then the next, spacing them by [RELEASE_DELAY_MS]. A size change passes 0 (v4.13): the
-     * release still happens one display at a time, but without the 140~600 ms wait in which the
-     * task that was just taken off the old display could still be handed back to the new one at
-     * its old bounds.
+     * go, then the next, spacing them by [RELEASE_DELAY_MS]. Only a pane whose app had to be
+     * started again on the move's failure passes [FAST_RELEASE_MS] (v4.11): there an old instance
+     * would otherwise keep talking for another 600 ms.
      */
     private fun retire(host: DisplayHost, displayId: Int, delayMs: Long = RELEASE_DELAY_MS) {
         retiring.addLast(host to displayId)
         pumpRetire(delayMs)
     }
-
-    /**
-     * v4.13: ends the app's process before it is started again on a display of another size.
-     *
-     * A music app is deliberately left running: its playback lives in a service, and force-stopping
-     * it would cut the sound the user is listening to. Its task is still taken off the old display
-     * and it is started again on the new one, so the pane comes up at the new size — only the
-     * process (and therefore the song) survives.
-     */
-    private fun forceStopForResize(packageName: String): Boolean {
-        if (packageName == settings.musicPackage) {
-            Log.i(TAG, "resize: leaving the music app $packageName running (its playback is a service)")
-            return false
-        }
-        // Both panes may have been given the same app on purpose (that is the one case a launch
-        // takes a second task). Its process is shared, so ending it would also take the other
-        // pane's instance down while that pane keeps its display and is not restarted here.
-        if (bothPanesShow(packageName)) {
-            Log.i(TAG, "resize: $packageName is shown in both panes, not ending its process")
-            return false
-        }
-        return TaskMover.forceStop(context, packageName)
-    }
-
-    /** True when both panes are meant to show [packageName] (v4.13, see [forceStopForResize]). */
-    private fun bothPanesShow(packageName: String): Boolean =
-        packages[Side.LEFT] == packageName && packages[Side.RIGHT] == packageName
 
     private fun pumpRetire(delayMs: Long = RELEASE_DELAY_MS) {
         if (retiringBusy) return
@@ -1557,8 +1507,6 @@ class VirtualDisplayEngine(
         }
         panes.clear()
         hosts.clear()
-        restartQueue.clear()
-        restartBusy = false
         // A display whose release was still pending would otherwise outlive the engine.
         retiring.forEach { (owner, displayId) -> owner.release(displayId) }
         retiring.clear()
@@ -1655,13 +1603,6 @@ class VirtualDisplayEngine(
 
         /** A committed bounds pass settles quickly only this long after it arrived (v4.10). */
         private const val COMMIT_WINDOW_MS = 1200L
-
-        /**
-         * v4.13: after a size change the app is started again this long after its old task was
-         * removed and its old display released, so the start is a genuinely new one at the new
-         * width (the 30:70 map report of 2026-11-27).
-         */
-        private const val SIZE_RESTART_DELAY_MS = 180L
 
         /** The platform-signed build's application id suffix (see app/build.gradle.kts). */
         private const val SYSTEMUID_SUFFIX = ".systemuid"

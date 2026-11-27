@@ -31,6 +31,10 @@
       declared here so the SystemUID build (sharedUserId="android.uid.system") is granted them,
       and so the standard build can report them as unavailable and fall back to Shizuku. A normal
       installation is simply not granted these; nothing crashes over that.
+
+      v4.14: MANAGE_ACTIVITY_TASKS also carries `resizeTask`, which is how a pane's app is laid out
+      at its new rectangle when the ratio changes — without ending it. FORCE_STOP_PACKAGES is not
+      needed any more: nothing ends an app to make it read a new display.
     -->
     <uses-permission
         android:name="android.permission.ADD_TRUSTED_DISPLAY"
@@ -40,15 +44,6 @@
         tools:ignore="ProtectedPermissions" />
     <uses-permission
         android:name="android.permission.MANAGE_ACTIVITY_TASKS"
-        tools:ignore="ProtectedPermissions" />
-    <!--
-      v4.13: a pane whose display changed size must not take its old process along. The SystemUID
-      build holds FORCE_STOP_PACKAGES through its platform signature and ends the app there, so a
-      map app re-reads the new display instead of laying itself out at the old width (the user's
-      30:70 report of 2026-11-27). The standard build is simply refused, which is caught.
-    -->
-    <uses-permission
-        android:name="android.permission.FORCE_STOP_PACKAGES"
         tools:ignore="ProtectedPermissions" />
     <uses-permission
         android:name="android.permission.INTERNAL_SYSTEM_WINDOW"

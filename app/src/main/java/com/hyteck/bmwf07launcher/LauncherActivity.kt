@@ -1128,8 +1128,10 @@ class LauncherActivity : ScaledActivity() {
                 onMessage = { message -> toast(message) },
                 onUnavailable = { message -> handleEngineUnavailable(message) },
                 touchSink = { displayId, event -> touchRouter.handle(displayId, event) },
-                // v4.12: a ratio change restarts a pane's app on the new display; a music app the
-                // user designated is started playing again, as it is on any other open.
+                // v4.12: a ratio change lays a pane's app out on a new display; a music app the
+                // user designated is started playing again if that left it paused. v4.14 keeps the
+                // app running across the change (move + resize instead of a restart), but an
+                // activity recreated by the configuration change can still come back paused.
                 onAppRestarted = { _, pkg -> scheduleAutoPlay(pkg) }
             )
         } else {
