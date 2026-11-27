@@ -447,7 +447,10 @@ class LauncherActivity : ScaledActivity() {
             return
         }
         val presets = cachedPresets
-        val name = "${repo.labelOf(leftPkg)} + ${repo.labelOf(rightPkg)}"
+        // v4.12: the ratio is part of the default name as well as of the dock row, so two presets
+        // of the same two apps (30:70 and 70:30) can be told apart in the long-press menu too.
+        val name = "${repo.labelOf(leftPkg)} + ${repo.labelOf(rightPkg)} " +
+            "(${ratio}:${100 - ratio})"
         val added = settings.addPreset(Preset(name, leftPkg, rightPkg, ratio))
         if (!added) {
             toast(
@@ -1087,7 +1090,10 @@ class LauncherActivity : ScaledActivity() {
                 settings,
                 onMessage = { message -> toast(message) },
                 onUnavailable = { message -> handleEngineUnavailable(message) },
-                touchSink = { displayId, event -> touchRouter.handle(displayId, event) }
+                touchSink = { displayId, event -> touchRouter.handle(displayId, event) },
+                // v4.12: a ratio change restarts a pane's app on the new display; a music app the
+                // user designated is started playing again, as it is on any other open.
+                onAppRestarted = { _, pkg -> scheduleAutoPlay(pkg) }
             )
         } else {
             binding.leftSurface.visibility = View.GONE
