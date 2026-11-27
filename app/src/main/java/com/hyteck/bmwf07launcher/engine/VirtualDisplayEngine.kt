@@ -1168,9 +1168,10 @@ class VirtualDisplayEngine(
     }
 
     override fun preparePackages(left: String?, right: String?) {
-        // Only the intention is recorded: a preset that changes the ratio, or a swap of the two
-        // panes, has to launch on the display the pane is about to have, and must not end an app
-        // that is on its way to the opposite pane (v4.11).
+        // Only the intention is recorded: a preset that also changes the ratio has to launch on the
+        // display the pane is about to have, so nothing is started on the old one (v4.11). The app
+        // that is really on a pane is tracked separately ([shownPackages]) and is only ended when
+        // the pane is emptied or given another app.
         if (left != null) packages[Side.LEFT] = left else forget(Side.LEFT)
         if (right != null) packages[Side.RIGHT] = right else forget(Side.RIGHT)
     }
