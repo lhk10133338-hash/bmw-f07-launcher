@@ -95,6 +95,8 @@ class TopHud private constructor(
         if (clockWanted == visible) return
         clockWanted = visible
         applyVisibility()
+        // The clock may have been away across a minute boundary; show the right time at once.
+        if (visible) renderClock()
     }
 
     fun release() {
