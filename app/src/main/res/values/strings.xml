@@ -84,7 +84,11 @@
     <string name="music_none">지정 안 함</string>
     <string name="music_selected">자동 재생 앱: %1$s</string>
     <string name="switch_auto_play">음악 앱을 열면 자동으로 재생</string>
-    <string name="music_hint">음악 앱을 창·프리셋·부팅 복원으로 열면 약 1.5초 뒤 재생 키를 보내 재생을 시작합니다.</string>
+    <string name="auto_play_delay_title">자동 재생 딜레이 · 0~15초</string>
+    <string name="auto_play_delay_value">%1$d초</string>
+    <string name="auto_play_delay_value_default">3초</string>
+    <string name="switch_auto_play_network">데이터 연결된 뒤에 재생</string>
+    <string name="music_hint">음악 앱을 창·프리셋·부팅 복원으로 열면 설정한 딜레이(기본 3초) 뒤 재생 키를 보냅니다. 데이터 연결 후 재생을 켜 두면 통신이 붙을 때까지 최대 25초 기다렸다가 시작하고, 그래도 재생이 안 되면 2초 간격으로 3번 더 시도합니다.</string>
 
     <string name="section_presets">독 프리셋</string>
     <string name="section_intro">시작 인트로</string>

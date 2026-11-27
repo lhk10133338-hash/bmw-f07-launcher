@@ -89,6 +89,30 @@ class Settings(context: Context) {
         set(value) = write { it.putBoolean(KEY_AUTO_PLAY, value) }
 
     /**
+     * v4.9: seconds to wait after the music app is opened before the first PLAY key.
+     *
+     * A fixed 1.5 s was too early on the car unit: the app is still starting and the key is
+     * dropped. The user picks anything from 0 to 15 s; 3 s is the default.
+     */
+    var autoPlayDelaySec: Int
+        get() = prefs.getInt(KEY_AUTO_PLAY_DELAY, DEFAULT_AUTO_PLAY_DELAY_SEC)
+            .coerceIn(MIN_AUTO_PLAY_DELAY_SEC, MAX_AUTO_PLAY_DELAY_SEC)
+        set(value) = write {
+            it.putInt(
+                KEY_AUTO_PLAY_DELAY,
+                value.coerceIn(MIN_AUTO_PLAY_DELAY_SEC, MAX_AUTO_PLAY_DELAY_SEC)
+            )
+        }
+
+    /**
+     * v4.9: hold the PLAY key back until a data connection exists. The unit's LTE link is
+     * usually up a few seconds after boot, and streaming players refuse to start without it.
+     */
+    var autoPlayWaitNetwork: Boolean
+        get() = prefs.getBoolean(KEY_AUTO_PLAY_WAIT_NETWORK, true)
+        set(value) = write { it.putBoolean(KEY_AUTO_PLAY_WAIT_NETWORK, value) }
+
+    /**
      * Size of the launcher's own UI (settings, app picker, app drawer) in percent.
      * 100 uses the device density; lower values fit more on a 2560×720 screen.
      */
@@ -282,6 +306,11 @@ class Settings(context: Context) {
         /** 완전블랙 (테두리): `#000000` with a 1dp seam between the panes. */
         const val THEME_BLACK_LINE = 1
 
+        /** v4.9 auto-play delay bounds, in seconds. */
+        const val MIN_AUTO_PLAY_DELAY_SEC = 0
+        const val MAX_AUTO_PLAY_DELAY_SEC = 15
+        const val DEFAULT_AUTO_PLAY_DELAY_SEC = 3
+
         const val MAX_PRESETS = 12
         const val MIN_DPI = 120
         const val MAX_DPI = 360
@@ -304,6 +333,8 @@ class Settings(context: Context) {
         private const val KEY_UI_SCALE = "ui_scale"
         private const val KEY_MUSIC_PACKAGE = "music_package"
         private const val KEY_AUTO_PLAY = "music_auto_play"
+        private const val KEY_AUTO_PLAY_DELAY = "music_auto_play_delay"
+        private const val KEY_AUTO_PLAY_WAIT_NETWORK = "music_auto_play_wait_network"
         private const val KEY_DOCK_LEFT = "dock_left"
         private const val KEY_DOCK_AUTO_HIDE = "dock_auto_hide"
         private const val KEY_DOCK_HIDDEN = "dock_hidden"

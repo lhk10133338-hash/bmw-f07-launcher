@@ -7,10 +7,14 @@ import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Rect
 import android.media.AudioManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import android.util.Log
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
@@ -115,23 +119,24 @@ class LauncherActivity : ScaledActivity() {
      */
     private var suppressAutoRestore = false
 
-    private val autoPlayRunnable = Runnable {
-        try {
-            val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY))
-            handler.postDelayed({
-                try {
-                    audio.dispatchMediaKeyEvent(
-                        KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY)
-                    )
-                } catch (ignored: Exception) {
-                    // The player went away between the two events; nothing to do.
-                }
-            }, 60L)
-        } catch (ignored: Exception) {
-            // No audio service, or the platform refuses the key: never crash the launcher.
-        }
-    }
+    // ------------------------------------------------------- music auto play (v4.9)
+
+    /**
+     * v4.9: the PLAY key is no longer sent once, 1.5 s after the tap.
+     *
+     * On the car unit a music app is still starting at 1.5 s and its LTE link is often still
+     * negotiating, so the key was dropped and nothing played (user report of 2026-11-27). The
+     * chain below waits the delay chosen in the settings, optionally waits for a data connection,
+     * then keeps nudging the player until it reports itself playing.
+     *
+     * Every step carries the token of the request it belongs to: a newer request, a settings
+     * change or a pane that no longer holds the music app makes the remaining steps drop out, so
+     * a late step can never play something the user did not ask for.
+     */
+    private var autoPlayToken = 0
+    private var autoPlayNetworkWaitStart = 0L
+    private var autoPlaySendCount = 0
+    private val autoPlaySteps = ArrayList<Runnable>()
 
     private val restoreRunnable = Runnable {
         if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return@Runnable
@@ -808,15 +813,136 @@ class LauncherActivity : ScaledActivity() {
     }
 
     /**
-     * Music players opened from a launcher often come up paused, so a media PLAY key is sent
-     * once the app has had time to show its player (see the user request of 2026-11-24).
+     * Music players opened from a launcher often come up paused, so a media PLAY key is sent once
+     * the app has had time to show its player (see the user request of 2026-11-24).
+     *
+     * v4.9: how long that is, and whether to wait for data first, comes from the settings; the
+     * key is repeated while the player stays silent (see the user report of 2026-11-27).
      */
     private fun scheduleAutoPlay(pkg: String) {
-        if (!settings.autoPlayMusic) return
+        if (!settings.autoPlayMusic) {
+            cancelAutoPlay()
+            return
+        }
         val music = settings.musicPackage ?: return
         if (music != pkg) return
-        handler.removeCallbacks(autoPlayRunnable)
-        handler.postDelayed(autoPlayRunnable, AUTO_PLAY_DELAY_MS)
+        cancelAutoPlay()
+        val token = autoPlayToken
+        autoPlaySendCount = 0
+        autoPlayNetworkWaitStart = 0L
+        val delayMs = settings.autoPlayDelaySec * 1_000L
+        Log.i(TAG, "auto play: $pkg in ${delayMs}ms, waitNetwork=${settings.autoPlayWaitNetwork}")
+        postAutoPlayStep(delayMs) { awaitNetworkOrPlay(token, pkg) }
+    }
+
+    /** Drops every waiting auto-play step; a step already running stops on its token. */
+    private fun cancelAutoPlay() {
+        autoPlayToken++
+        for (step in autoPlaySteps) handler.removeCallbacks(step)
+        autoPlaySteps.clear()
+    }
+
+    private fun postAutoPlayStep(delayMs: Long, step: () -> Unit) {
+        val runnable = Runnable(step)
+        autoPlaySteps.add(runnable)
+        handler.postDelayed(runnable, delayMs)
+    }
+
+    /**
+     * Waits for a working data connection when the user asked for it: polled once a second, at
+     * most 25 s, then the player is tried anyway (a local file plays without a network and a
+     * streaming player says so itself).
+     */
+    private fun awaitNetworkOrPlay(token: Int, pkg: String) {
+        if (!autoPlayWanted(token, pkg)) return
+        if (!settings.autoPlayWaitNetwork || hasDataConnection()) {
+            sendAutoPlayKey(token, pkg)
+            return
+        }
+        val now = SystemClock.elapsedRealtime()
+        if (autoPlayNetworkWaitStart == 0L) autoPlayNetworkWaitStart = now
+        val waited = now - autoPlayNetworkWaitStart
+        if (waited >= AUTO_PLAY_NETWORK_TIMEOUT_MS) {
+            Log.w(TAG, "auto play: still offline after ${waited}ms, trying $pkg anyway")
+            sendAutoPlayKey(token, pkg)
+            return
+        }
+        postAutoPlayStep(AUTO_PLAY_NETWORK_POLL_MS) { awaitNetworkOrPlay(token, pkg) }
+    }
+
+    /** Sends one PLAY key, then checks 1.5 s later whether the player really started. */
+    private fun sendAutoPlayKey(token: Int, pkg: String) {
+        if (!autoPlayWanted(token, pkg)) return
+        val audio = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        if (audio.isMusicActive) {
+            // A second key would toggle the song the player is already playing.
+            Log.i(TAG, "auto play: music is already playing, leaving it alone")
+            return
+        }
+        autoPlaySendCount++
+        Log.i(TAG, "auto play: sending PLAY ($autoPlaySendCount) for $pkg")
+        val keyDown = try {
+            audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY))
+            true
+        } catch (ignored: Exception) {
+            // No audio service, or the platform refuses the key: never crash the launcher.
+            false
+        }
+        if (!keyDown) return
+        postAutoPlayStep(AUTO_PLAY_KEY_UP_MS) {
+            try {
+                audio.dispatchMediaKeyEvent(
+                    KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY)
+                )
+            } catch (ignored: Exception) {
+                // The player went away between the two events; nothing to do.
+            }
+        }
+        postAutoPlayStep(AUTO_PLAY_VERIFY_MS) { verifyAutoPlay(token, pkg, audio) }
+    }
+
+    private fun verifyAutoPlay(token: Int, pkg: String, audio: AudioManager) {
+        if (!autoPlayWanted(token, pkg)) return
+        if (audio.isMusicActive) {
+            Log.i(TAG, "auto play: $pkg is playing")
+            return
+        }
+        if (autoPlaySendCount >= MAX_AUTO_PLAY_ATTEMPTS) {
+            Log.w(TAG, "auto play: no sound after $autoPlaySendCount keys, giving up")
+            return
+        }
+        Log.i(TAG, "auto play: no sound yet, retrying in ${AUTO_PLAY_RETRY_MS}ms")
+        postAutoPlayStep(AUTO_PLAY_RETRY_MS) { sendAutoPlayKey(token, pkg) }
+    }
+
+    /**
+     * True while this request is still the one the user wants: same request, auto play still on,
+     * same music app, and that app still placed in one of the panes (closing it stops the chain).
+     */
+    private fun autoPlayWanted(token: Int, pkg: String): Boolean {
+        if (token != autoPlayToken) return false
+        if (!settings.autoPlayMusic) return false
+        if (settings.musicPackage != pkg) return false
+        val single = fullscreen
+        return leftPkg == pkg || rightPkg == pkg || (single != null && pkgOf(single) == pkg)
+    }
+
+    /**
+     * True when Android reports a network that can carry internet traffic. The unit's LTE link
+     * takes seconds to appear and `NET_CAPABILITY_VALIDATED` arrives later still, so INTERNET on
+     * an existing network is what is asked for here — no captive-portal check.
+     */
+    private fun hasDataConnection(): Boolean {
+        val manager = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return true
+        return try {
+            val network = manager.activeNetwork ?: return false
+            val caps = manager.getNetworkCapabilities(network) ?: return false
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (ignored: Exception) {
+            // No ACCESS_NETWORK_STATE (an install from before v4.9): never block the player.
+            true
+        }
     }
 
     /** Sets (or clears) one pane and remembers it immediately for the next boot. */
@@ -1176,6 +1302,7 @@ class LauncherActivity : ScaledActivity() {
     }
 
     override fun onDestroy() {
+        cancelAutoPlay()
         handler.removeCallbacksAndMessages(null)
         ShizukuBridge.removeListener(shizukuStateListener)
         binding.introView.onFinished = null
@@ -1371,9 +1498,21 @@ class LauncherActivity : ScaledActivity() {
     companion object {
         const val EXTRA_PACKAGE = "extra_package"
         const val EXTRA_SIDE = "extra_side"
+        private const val TAG = "MNLauncher"
         private const val RESTORE_DELAY_MS = 280L
-        private const val AUTO_PLAY_DELAY_MS = 1500L
         private const val SESSION_START_DELAY_MS = 140L
+
+        /** v4.9 auto play: the key goes DOWN, UP 60 ms later, checked at 1.5 s. */
+        private const val AUTO_PLAY_KEY_UP_MS = 60L
+        private const val AUTO_PLAY_VERIFY_MS = 1_500L
+
+        /** v4.9: while the player stays silent, try again every 2 s; 1 key + 3 retries. */
+        private const val AUTO_PLAY_RETRY_MS = 2_000L
+        private const val MAX_AUTO_PLAY_ATTEMPTS = 4
+
+        /** v4.9: data connection polling — once a second, 25 s at most. */
+        private const val AUTO_PLAY_NETWORK_POLL_MS = 1_000L
+        private const val AUTO_PLAY_NETWORK_TIMEOUT_MS = 25_000L
 
         /** A picture intro stays about this long unless it is touched (v3.2). */
         private const val INTRO_IMAGE_MS = 2500L

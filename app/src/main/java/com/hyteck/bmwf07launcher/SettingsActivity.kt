@@ -646,7 +646,42 @@ class SettingsActivity : ScaledActivity() {
         binding.switchAutoPlay.isChecked = settings.autoPlayMusic
         binding.switchAutoPlay.setOnCheckedChangeListener { _, checked ->
             settings.autoPlayMusic = checked
+            updateAutoPlayControlsEnabled()
         }
+        binding.autoPlayDelaySeek.max = Settings.MAX_AUTO_PLAY_DELAY_SEC
+        binding.autoPlayDelaySeek.progress = settings.autoPlayDelaySec
+        binding.autoPlayDelayValue.text =
+            getString(R.string.auto_play_delay_value, settings.autoPlayDelaySec)
+        binding.autoPlayDelaySeek.setOnSeekBarChangeListener(
+            object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(
+                    seekBar: SeekBar?,
+                    progress: Int,
+                    fromUser: Boolean
+                ) {
+                    val seconds = progress.coerceIn(
+                        Settings.MIN_AUTO_PLAY_DELAY_SEC,
+                        Settings.MAX_AUTO_PLAY_DELAY_SEC
+                    )
+                    binding.autoPlayDelayValue.text =
+                        getString(R.string.auto_play_delay_value, seconds)
+                    if (fromUser) settings.autoPlayDelaySec = seconds
+                }
+
+                override fun onStartTrackingTouch(seekBar: SeekBar?) {
+                    // no-op
+                }
+
+                override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                    // no-op
+                }
+            }
+        )
+        binding.switchAutoPlayNetwork.isChecked = settings.autoPlayWaitNetwork
+        binding.switchAutoPlayNetwork.setOnCheckedChangeListener { _, checked ->
+            settings.autoPlayWaitNetwork = checked
+        }
+        updateAutoPlayControlsEnabled()
         binding.btnPickMusic.setOnClickListener {
             AppPickerDialog.show(this, getString(R.string.music_pick), repo.apps) { pkg ->
                 settings.musicPackage = pkg
@@ -666,6 +701,18 @@ class SettingsActivity : ScaledActivity() {
         } else {
             getString(R.string.music_selected, repo.labelOf(pkg))
         }
+    }
+
+    /**
+     * v4.9: the delay slider and the network switch only matter while auto play is on; they are
+     * greyed out otherwise so the screen still says which settings are in force.
+     */
+    private fun updateAutoPlayControlsEnabled() {
+        val enabled = settings.autoPlayMusic
+        binding.tvAutoPlayDelayTitle.isEnabled = enabled
+        binding.autoPlayDelaySeek.isEnabled = enabled
+        binding.autoPlayDelayValue.isEnabled = enabled
+        binding.switchAutoPlayNetwork.isEnabled = enabled
     }
 
     // --------------------------------------------------------------- presets

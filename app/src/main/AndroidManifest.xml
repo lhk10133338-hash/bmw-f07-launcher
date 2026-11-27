@@ -5,6 +5,12 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!--
+      v4.9: the auto-play chain waits for a data connection before it sends the media key
+      (ConnectivityManager.activeNetwork / getNetworkCapabilities).
+    -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!--
       v4.2: storage access for the boot video/picture picker. The document picker this app asks
       for first is missing on many head units (and the SystemUID build runs as UID system, which
       some firmware refuses to hand OPEN_DOCUMENT to), so the launcher lists the media itself from
