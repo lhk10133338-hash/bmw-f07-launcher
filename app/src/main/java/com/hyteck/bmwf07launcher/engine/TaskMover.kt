@@ -121,6 +121,28 @@ internal object TaskMover {
         return names.contains(packageName)
     }
 
+    /**
+     * The activity on top of [packageName]'s task on [displayId], or null when the platform does
+     * not tell (v4.8).
+     *
+     * Used to wake a pane's app after it comes back from behind another window: re-ordering this
+     * activity keeps what the app was showing, while a launch intent would re-order its main one.
+     */
+    fun topActivityOn(displayId: Int, packageName: String): android.content.ComponentName? {
+        val service = service ?: return null
+        val task = tasksOn(service, displayId).firstOrNull { taskPackage(it) == packageName }
+            ?: return null
+        for (field in arrayOf("topActivity", "baseActivity")) {
+            try {
+                val value = task.javaClass.getField(field).get(task)
+                if (value is android.content.ComponentName) return value
+            } catch (t: Throwable) {
+                // Field missing on this firmware.
+            }
+        }
+        return null
+    }
+
     // ------------------------------------------------------------------ internals
 
     /**

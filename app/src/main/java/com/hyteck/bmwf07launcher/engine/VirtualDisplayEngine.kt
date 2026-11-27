@@ -9,6 +9,7 @@ import android.hardware.display.DisplayManager
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.Display
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.Surface
@@ -78,6 +79,40 @@ import kotlin.math.abs
  *
  * The extra few hundred milliseconds are invisible (the app is already on its new display); the
  * stall was not.
+ *
+ * ## v4.8 — a pane comes back after *any* window has taken the screen (2026-11-27)
+ *
+ * The car unit reported on v4.6: "4.6에서 후진을 넣으면 화면이 카메라로바뀌거든 근데 끝나고 다시 런쳐로
+ * 돌아가는데 이때 화면이 모두 까매.계속 반복" — and then, asked which screen: "후진이 문제는 아닌것같고
+ * 다른 화면에서 다시 복귀하면 다 그런것같아". It is not the camera: every return from a window in
+ * front of this launcher left both panes black.
+ *
+ * While another window covers this launcher the pane SurfaceViews lose their surface
+ * (`surfaceDestroyed`) and get a new one on the way back, but the display a pane created is still
+ * bound to the old BufferQueue — the binding this firmware never picks up again (see v4.5) — and
+ * nothing on the way back replaced it:
+ *
+ *  - [resume] — the one call made for a return — *skipped* a pane whose surface had been reported
+ *    lost ([surfaceLost]) without looking at it, exactly the pane that needed a new display, and it
+ *    never checked the surface at all, so a pane whose surface came back before that call was left
+ *    on its dead binding;
+ *  - `LauncherActivity.onResume()` only asked for [resume] on a return from the launcher's own
+ *    screens (the v3.2 free-form guard), so a return from the camera or any other app never
+ *    reached this class at all.
+ *
+ * v4.8 makes the return a path of its own ([repairPane]):
+ *
+ *  1. Every return looks at each pane's *current* surface and display instead of trusting a
+ *     callback or a flag: a surface the display is not bound to, a reported surface loss, or a
+ *     display the platform no longer lists all mean the pane gets a new display.
+ *  2. The app is woken on that new display. Moving its root task keeps the app's state, but an
+ *     activity that was stopped while it was behind another window draws nothing until it is
+ *     resumed, so the activity that is on top of its task is brought to the front
+ *     ([wakeOnDisplay]); the app's own main activity is only a fallback, because re-ordering that
+ *     one would move a route or a player off the screen.
+ *  3. A pane that is already drawing is only checked for its app's task and left alone, and every
+ *     step is retried a few times, because a launcher that returns is laid out and shown only
+ *     after `onResume` has already run.
  *
  * ## What else is kept from v4.0–v4.4
  *
@@ -333,17 +368,97 @@ class VirtualDisplayEngine(
      * so [surfaceLost] stays empty and nothing here touches the displays.
      */
     override fun resume(sides: Set<Side>) {
+        if (released || sides.isEmpty()) return
+        repairSides(HashSet(sides), 0)
+    }
+
+    /**
+     * One pass of [resume] over [sides], repeated a few times for a pane that is not ready yet.
+     *
+     * A launcher that just came back from another window is still being laid out and shown when
+     * `onResume` runs, so a pane can have no surface or no size for another moment. Returning to it
+     * later is what makes the fix reliable; the number of passes is small and bounded (v4.8).
+     */
+    private fun repairSides(sides: Set<Side>, pass: Int) {
         if (released) return
+        var again = false
         for (side in sides) {
-            val pkg = packages[side] ?: continue
-            val displayId = panes[side]?.displayId ?: continue
-            if (!surfaceLost.contains(side)) continue
-            if (!TaskMover.hasTask(displayId, pkg)) {
-                Log.w(TAG, "pane $side app $pkg is gone from display $displayId; starting it again")
-                launchOnDisplay(side, pkg, displayId, reorder = false)
-            }
+            if (!repairPane(side)) again = true
         }
         scheduleSync()
+        if (again && pass < MAX_RESUME_PASSES) {
+            handler.postDelayed({
+                if (!released) repairSides(sides, pass + 1)
+            }, RESUME_RETRY_MS)
+        }
+    }
+
+    /**
+     * Brings one pane back after a return from another window (v4.8 — see the class header).
+     *
+     * @return true when this pass left nothing to do for the pane, false to be looked at again.
+     */
+    private fun repairPane(side: Side): Boolean {
+        val pkg = packages[side] ?: return true
+        // A replacement that is already on its way brings the picture and the app back by itself.
+        if (pendingSwaps.containsKey(side)) return true
+        val view = viewOf(side)
+        if (!view.isShown) return false
+        val surface = view.holder.surface
+        if (surface == null || !surface.isValid) return false
+        val width = view.width
+        val height = view.height
+        if (width <= 0 || height <= 0) return false
+        val host = hostFor(side) ?: return false
+
+        val pane = panes[side]
+        if (pane == null) {
+            // There is no display to come back to (a first pass after a restart, or a display the
+            // platform dropped): make one now instead of waiting for a callback.
+            createDisplay(side, host, width, height, densityOf(side), surface)
+            return true
+        }
+
+        val surfaceMoved = pane.surface !== surface
+        val lost = surfaceLost.contains(side)
+        val alive = displayAlive(host, pane.displayId)
+        if (surfaceMoved || lost || !alive) {
+            if (surfaceMoved) surfaceLost.add(side)
+            Log.i(
+                TAG,
+                "pane $side came back (newSurface=$surfaceMoved, lost=$lost, alive=$alive); " +
+                    "replacing display ${pane.displayId}"
+            )
+            scheduleSwap(side, SURFACE_SWAP_MS)
+            return true
+        }
+
+        if (!TaskMover.hasTask(pane.displayId, pkg)) {
+            Log.w(TAG, "pane $side app $pkg is gone from display ${pane.displayId}; starting it again")
+            launchOnDisplay(side, pkg, pane.displayId, reorder = false)
+        }
+        return true
+    }
+
+    /**
+     * True when [displayId] is still one the platform lists.
+     *
+     * Only asked when this process owns the display: a display created by the Shizuku service
+     * belongs to another UID and the platform does not report it to this app, so its silence
+     * would say nothing. A display that was taken away while this launcher was behind another
+     * window leaves a pane that keeps its (now dead) record and never redraws, so a return has to
+     * look. Anything that cannot be read is taken as alive: rebuilding a display out of ignorance
+     * would restart the app for nothing.
+     */
+    private fun displayAlive(host: DisplayHost, displayId: Int): Boolean {
+        if (host !is SystemDisplayHost) return true
+        return try {
+            // A platform that cannot even name the main display is not answering about this one.
+            displayManager.getDisplay(displayId) != null ||
+                displayManager.getDisplay(Display.DEFAULT_DISPLAY) == null
+        } catch (t: Throwable) {
+            true
+        }
     }
 
     private fun syncSide(side: Side) {
@@ -391,11 +506,15 @@ class VirtualDisplayEngine(
         val surfaceReplaced = pane.surface !== surface
         val geometryMoved = abs(pane.width - width) > SIZE_TOLERANCE ||
             abs(pane.height - height) > SIZE_TOLERANCE || pane.dpi != dpi
-        if (!surfaceReplaced && !geometryMoved) return
+        // v4.8: a surface the pane reported lost is replaced even when the SurfaceView hands back
+        // the same Surface object — a display bound to a BufferQueue that went away does not start
+        // drawing into it again, and that is what a return from another window looked like.
+        val lossReported = surfaceLost.contains(side)
+        if (!surfaceReplaced && !geometryMoved && !lossReported) return
 
         // A drag makes dozens of these passes; only the rectangle it settles on is worth a display.
         val settleMs = when {
-            surfaceReplaced -> SURFACE_SWAP_MS
+            surfaceReplaced || lossReported -> SURFACE_SWAP_MS
             commitPending -> COMMIT_SETTLE_MS
             else -> GEOMETRY_SETTLE_MS
         }
@@ -548,6 +667,9 @@ class VirtualDisplayEngine(
             host.setSurface(pane.displayId, surface)
             host.resize(pane.displayId, width, height, dpi)
             panes[side] = Pane(pane.displayId, surface, width, height, dpi)
+            // The record now matches the surface; a loss left set here would make every later pass
+            // try to replace the display again.
+            surfaceLost.remove(side)
             showStatus(side, "화면을 다시 만들 수 없습니다\n${hostName(host)}")
             return
         }
@@ -632,9 +754,11 @@ class VirtualDisplayEngine(
         height: Int,
         dpi: Int
     ) {
+        // v4.8: read the loss before clearing it — a pane that comes back from behind another
+        // window needs its app woken on the new display even when moving the task succeeded.
+        val wasSurfaceLost = surfaceLost.remove(side)
         panes[side] = Pane(created, surface, width, height, dpi)
         swappedAt[side] = System.currentTimeMillis()
-        surfaceLost.remove(side)
         val generation = (generations[side] ?: 0) + 1
         generations[side] = generation
         hideStatus(side)
@@ -651,6 +775,12 @@ class VirtualDisplayEngine(
             // Either the package changed (e.g. preset) or the move was refused: start the desired
             // app directly on the new display.
             launchOnDisplay(side, pkg, created, reorder = sameApp, fatal = false)
+        } else if (pkg != null && wasSurfaceLost) {
+            // The pane was behind another window, so its app was stopped while nothing drew into
+            // it. The move kept the app and its state, but a stopped activity produces no frames
+            // until it is resumed: bring it back to the front of its own display (v4.8).
+            Log.i(TAG, "pane $side app $pkg came back with the pane; waking it on display $created")
+            wakeOnDisplay(side, pkg, created)
         }
         // The app has left the old display (moved) or a new instance is starting on the new one:
         // its content is not needed any more.
@@ -836,6 +966,39 @@ class VirtualDisplayEngine(
         }
     }
 
+    /**
+     * Brings the pane's app back to the front of its own display without changing what it shows
+     * (v4.8).
+     *
+     * The activity on top of the app's task is the one that is re-ordered. A launch intent would
+     * re-order the app's *main* activity instead, which moves an open route or player off the
+     * screen on every return; that launch intent is only the fallback, for a firmware whose task
+     * information cannot be read.
+     */
+    private fun wakeOnDisplay(side: Side, packageName: String, displayId: Int) {
+        val top = TaskMover.topActivityOn(displayId, packageName)
+        if (top == null) {
+            launchOnDisplay(side, packageName, displayId, reorder = true, fatal = false)
+            return
+        }
+        val intent = Intent(Intent.ACTION_MAIN).apply {
+            component = top
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+        }
+        val options = ActivityOptions.makeBasic()
+        options.setLaunchDisplayId(displayId)
+        try {
+            context.startActivity(intent, options.toBundle())
+            activePackages[side] = packageName
+            launchErrorReported = false
+        } catch (e: Exception) {
+            // A component this build may not start (the standard build runs as a plain app): the
+            // app's own launch intent is the way that always exists.
+            Log.w(TAG, "pane $side wake of ${top.flattenToShortString()} failed (${e.javaClass.simpleName})")
+            launchOnDisplay(side, packageName, displayId, reorder = true, fatal = false)
+        }
+    }
+
     private fun launchOnDisplay(
         side: Side,
         packageName: String,
@@ -959,6 +1122,10 @@ class VirtualDisplayEngine(
 
         /** ~0.4 s of retries for a pane surface that is being re-created. */
         private const val MAX_SURFACE_WAITS = 6
+
+        /** A pane that a return found not laid out yet is looked at again a few times (v4.8). */
+        private const val MAX_RESUME_PASSES = 6
+        private const val RESUME_RETRY_MS = 350L
 
         /** The platform-signed build's application id suffix (see app/build.gradle.kts). */
         private const val SYSTEMUID_SUFFIX = ".systemuid"

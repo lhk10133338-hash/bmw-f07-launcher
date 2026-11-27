@@ -1070,6 +1070,8 @@ class LauncherActivity : ScaledActivity() {
                 playIntro()
             }
         }
+        // v4.8: the home key brings the launcher back as a new intent as often as it resumes it.
+        if (engine?.inline == true) scheduleRestore()
     }
 
     /**
@@ -1078,7 +1080,13 @@ class LauncherActivity : ScaledActivity() {
      */
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) applyImmersive()
+        if (hasFocus) {
+            applyImmersive()
+            // v4.8: a covering window that leaves without stopping this activity (an overlay, a
+            // dialog of the car's own UI) only hands the focus back — that is a return, too, and
+            // the panes are re-checked for it.
+            if (sessionStarted && engine?.inline == true) scheduleRestore()
+        }
     }
 
     override fun onResume() {
@@ -1131,14 +1139,34 @@ class LauncherActivity : ScaledActivity() {
         // their panes (the opaque launcher window was covering them). Any other resume — most of
         // all the user closing a floating window with its × button — must not start that app
         // again, or closing it would reopen it forever (v3.2).
+        //
+        // v4.8: that guard only makes sense for the free-form engine. The inline (virtual display)
+        // engine has no window to close: when another window — the reverse camera, any app, the
+        // car's own menu, the home screen — covers this one, the panes lose their surfaces and
+        // come back black ("다른 화면에서 다시 복귀하면 다 그런것같아"), so every resume asks the
+        // engine to look at the panes. It is the engine's own task check that decides whether an
+        // app is started again, so a pane that is still drawing is left alone.
         suppressAutoRestore = false
-        if (resumeFromOwnScreen) {
+        val inline = engine?.inline == true
+        if (resumeFromOwnScreen || inline) {
             resumeFromOwnScreen = false
-            handler.removeCallbacks(restoreRunnable)
-            handler.postDelayed(restoreRunnable, RESTORE_DELAY_MS)
+            scheduleRestore()
         } else {
             handler.removeCallbacks(restoreRunnable)
         }
+    }
+
+    /**
+     * Posts [restoreRunnable] once the window is really back in front (v4.8).
+     *
+     * Every way a return from another window can arrive on this firmware goes through here:
+     * `onResume`, a new launch intent (`onNewIntent` — the home key) and a regained window focus
+     * (`onWindowFocusChanged`). Whichever of them the unit delivers, the panes are re-checked.
+     */
+    private fun scheduleRestore(delayMs: Long = RESTORE_DELAY_MS) {
+        if (!sessionStarted) return
+        handler.removeCallbacks(restoreRunnable)
+        handler.postDelayed(restoreRunnable, delayMs)
     }
 
     override fun onPause() {
