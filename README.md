@@ -1,4 +1,4 @@
-# BMW MN-Launcher 4.13
+# BMW MN-Launcher 4.14
 
 BMW F07 2016 530d xDrive 5GT + MEKEDE MN-L (Android 14, 2560×720 울트라와이드) 전용
 개인용 홈 런처입니다. Kotlin + Android SDK만 사용하며 네이티브 라이브러리(.so)가 없어
@@ -18,7 +18,51 @@ ARM64 실기기와 x86_64 에뮬레이터(LD플레이어 등) 모두에서 설�
 4.11은 **내비 앱이 두 개 실행돼 안내 음성이 두 번 들리던** 문제를 고치고, 같은 원인으로 남아 있던 잠재 오류(창 교체·전체화면·앱 빼기·터치 좌표·부팅 영상)를 함께 손본 버전입니다(아래 4.11 절).
 4.12는 **같은 앱 조합의 비율만 다른 프리셋으로 전환하면 창이 옛 비율 크기에 갇혀 오른쪽이 까맣게 비던** 문제를 고친 버전입니다(아래 4.12 절).
 4.13은 독의 작은 시계를 없애고 **상단 중앙 BMW 마크를 모든 화면에 상시** 띄우며, 그 옆에 **Orbitron 시계**를 붙인 버전입니다(메뉴에 들어가면 시계만 숨습니다 — 아래 4.13 절).
+4.14는 **비율을 바꿀 때마다 창의 앱이 꺼졌다 다시 켜지던 것을 없앤** 버전입니다(태스크를 새 화면으로 옮긴 뒤 플랫폼 `resizeTask`로 새 사각형에 맞춰 다시 그립니다 — 아래 4.14 절).
+같이, **부팅 인트로 동영상의 소리가 나지 않던 문제**도 고쳤습니다(음소거 하드코딩 + 오디오 속성 미지정).
 상단 바·하단 바를 없애고 **화면 전체를 두 개의 분할 창**, 왼쪽에 **56dp 슬림 독**만 남겼습니다.
+
+## 4.14 — 비율 변경 시 앱을 꺼지 않고 그대로 리사이즈 + 인트로 동영상 소리
+
+사용자 제보(2026-11-27): *"시계랑 마크는 잘 뜨는 거 확인했고, 문제는 비율 변경할 때마다 앱이 모두 꺼지고
+재시작한다"*, 그리고 *"인트로 재생 동영상을 넣는데 사운드가 안 나온다"*.
+
+### 1) 비율 변경 — 앱을 살려 둔 채로 새 크기에 맞춤
+
+v4.12·v4.13은 일부러 창의 앱을 꺼지게 했습니다. 새 크기로 만든 디스플레이에 옛 태스크를 옮기면 넘어온 창이
+**옛 디스플레이에서 측정된 `bounds`를 그대로 들고 와** 지도가 옛 폭으로만 그려지고 나머지가 까맣게 남았기
+때문입니다. 그 대신 앱을 종료하고 새로 띄워 처음부터 새 사각형으로 측정되게 한 것이고, 그 대가가 내비 경로·음악
+재생이 끊기는 일이었습니다.
+
+v4.14는 끊지 않는 쪽으로 해결합니다. 옮기는 것만으로는 부족했을 뿐, 빠져 있던 것은 플랫폼의 **리사이즈**입니다.
+
+- `TaskMover.moveRootTasks()` — 실행 중인 태스크를 새 디스플레이로 그대로 옮깁니다(경로·재생 유지).
+- `TaskMover.resizeTasksOnDisplay(displayId, width, height)` — 새 디스플레이의 태스크에
+  `IActivityTaskManager.resizeTask(taskId, Rect(0, 0, w, h), 0)`를 리플렉션으로 보내 **새 사각형으로 다시 배치**합니다
+  (`am task resize`와 같은 호출, 권한 `MANAGE_ACTIVITY_TASKS` — SystemUID 빌드가 플랫폼 서명으로 보유).
+  먼저 `setTaskWindowingMode(taskId, WINDOWING_MODE_FULLSCREEN)`을 조용히 시도해, 태스크가 사각형을 다시
+  계산해 버리는 경우를 막습니다(펌웨어에 없으면 그냥 넘어갑니다). 앱은 `onConfigurationChanged`/relayout으로
+  제자리에서 새 크기에 맞춰 다시 그립니다.
+- `wakeOnDisplay()` + `scheduleRewake()` — 리사이즈 직후 액티비티를 자기 디스플레이의 앞으로 다시 올려
+  측정·재도색을 확실히 합니다.
+- 옛 디스플레이 해제는 옮기기가 끝난 뒤 평소 지연(`RELEASE_DELAY_MS`)으로 처리합니다. 옮기기가 거부돼
+  어쩔 수 없이 새로 띄운 경우에만 `FAST_RELEASE_MS`입니다(v4.11과 동일).
+- 프리셋이 **앱까지 바꾸는** 경우는 예전처럼 옛 앱을 옛 디스플레이에서 내리고 새 앱을 새 디스플레이에 띄웁니다.
+  후진카메라·외부 화면 복귀 경로(`sizeChanged == false`)는 그대로입니다.
+- v4.13에서 넣었던 `forceStopPackage`·180 ms 재시작 큐는 **완전히 제거**했고, 더 이상 필요 없는
+  `FORCE_STOP_PACKAGES` 권한도 선언에서 뺐습니다.
+
+확인용 로그(`adb logcat -s MNLauncher`): `pane LEFT display N -> M (#k, …)` →
+`pane LEFT moved <pkg> 748x720 -> 1740x720 on display M without a restart (resize sent=true)` →
+`TaskMover: resizeTask(task=…, 1740x720) sent` → `pane LEFT app <pkg> came back with the pane; waking it on display M`.
+`resize sent=false`가 보이면 그 펌웨어가 `resizeTask`를 거부한 것이고, 그때는 앱이 살아 있는 대신 옛 폭으로 남습니다.
+
+### 2) 부팅 인트로 동영상 소리
+
+`ui/CroppedVideoView.kt`가 `onPrepared`에서 `setVolume(0f, 0f)`로 **음소거를 하드코딩**하고 있었습니다(무음 인트로가
+기본값이던 시절의 코드). 볼륨을 `1f`로 열고, `MediaPlayer`에
+`AudioAttributes(USAGE_MEDIA, CONTENT_TYPE_MOVIE)`를 지정해 차량의 미디어 오디오 채널로 나가게 했습니다.
+인트로를 넣지 않았거나 소리가 없는 파일이면 예전과 똑같이 조용합니다.
 
 ## 4.13 — 상단 BMW 마크 상시 표시 + Orbitron 시계 (독 시계 제거)
 
